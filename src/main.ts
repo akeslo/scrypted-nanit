@@ -53,6 +53,12 @@ class NanitCameraDevice extends ScryptedDeviceBase implements Intercom, Camera, 
         return {
             url: undefined,
             inputArguments: [
+                '-rtsp_transport', 'tcp',
+                '-analyzeduration', '1000000',
+                '-probesize', '5000000',
+                '-fflags', '+genpts+discardcorrupt',
+                '-use_wallclock_as_timestamps', '1',
+                '-max_delay', '500000',
                 '-i', file,
             ]
         };
@@ -326,7 +332,7 @@ class NanitCameraPlugin extends ScryptedDeviceBase implements DeviceProvider, Se
                 ScryptedInterface.Camera,
                 ScryptedInterface.VideoCamera,
                 ScryptedInterface.MotionSensor,
-                ScryptedInterface.Battery
+                //ScryptedInterface.Battery
             ];
 
             const device: Device = {
