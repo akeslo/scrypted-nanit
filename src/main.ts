@@ -52,8 +52,8 @@ class NanitCameraDevice extends ScryptedDeviceBase implements Intercom, Camera, 
 
         return {
             url: undefined,
+            container: 'flv',
             inputArguments: [
-                '-rtsp_transport', 'tcp',
                 '-analyzeduration', '1000000',
                 '-probesize', '5000000',
                 '-fflags', '+genpts+discardcorrupt',
