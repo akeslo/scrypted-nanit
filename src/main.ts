@@ -2,6 +2,7 @@ import { Battery, BinarySensor, Camera, Device, DeviceCreator, DeviceCreatorSett
 import sdk from '@scrypted/sdk';
 import { StorageSettings } from "@scrypted/sdk/storage-settings"
 import path from 'path';
+
 import axios, { AxiosRequestConfig } from 'axios'
 import { fail } from 'assert';
 
@@ -41,14 +42,14 @@ class NanitCameraDevice extends ScryptedDeviceBase implements Intercom, Camera, 
         }
         this.batteryLevel = 100;
         ffmpegInputVal = this.ffmpegInput(options);
-        
+
 
         return mediaManager.createMediaObject(Buffer.from(JSON.stringify(ffmpegInputVal)), ScryptedMimeTypes.FFmpegInput);
     }
 
     ffmpegInput(options?: MediaStreamOptions): FFmpegInput {
         this.console.log("Creating stream with camera:" + this.nativeId)
-        const file = "rtmps://media-secured.nanit.com/nanit/"+ this.nativeId! +"."+this.plugin.access_token;
+        const file = "rtmps://media-secured.nanit.com/nanit/" + this.nativeId! + "." + this.plugin.access_token;
 
         return {
             url: undefined,
@@ -59,6 +60,8 @@ class NanitCameraDevice extends ScryptedDeviceBase implements Intercom, Camera, 
                 '-fflags', '+genpts+discardcorrupt',
                 '-use_wallclock_as_timestamps', '1',
                 '-max_delay', '500000',
+                '-loglevel', 'error',
+                '-err_detect', 'ignore_err',
                 '-i', file,
             ]
         };
@@ -127,7 +130,7 @@ class NanitCameraPlugin extends ScryptedDeviceBase implements DeviceProvider, Se
                 await this.syncDevices(0);
             },
             noStore: true,
-        }, 
+        },
         refresh_token: {
             title: 'refresh_token'
         },
@@ -151,7 +154,7 @@ class NanitCameraPlugin extends ScryptedDeviceBase implements DeviceProvider, Se
             {
                 key: 'name',
                 title: 'Name',
-            }, 
+            },
             {
                 key: 'baby_uid',
                 title: 'baby_uid',
@@ -161,7 +164,7 @@ class NanitCameraPlugin extends ScryptedDeviceBase implements DeviceProvider, Se
 
     async createDevice(settings: DeviceCreatorSettings): Promise<string> {
         const nativeId = settings.baby_uid?.toString();
-        
+
         await deviceManager.onDeviceDiscovered({
             nativeId,
             type: ScryptedDeviceType.Camera,
@@ -213,37 +216,37 @@ class NanitCameraPlugin extends ScryptedDeviceBase implements DeviceProvider, Se
             throw new Error("Email and password required");
             return;
         }
-        if ( this.access_token && expiration > Date.now()) {
+        if (this.access_token && expiration > Date.now()) {
             //we already have a good access token that isn't expired
             this.console.log("Access Token Already Exists and is not expired. Going to call babies api to ensure we are logged in")
             //verify we are actually logged in
-            const authenticatedConfig:AxiosRequestConfig = {
-                headers:{
-                  "nanit-api-version": 1,
-                  "Authorization": "Bearer " +  this.access_token
+            const authenticatedConfig: AxiosRequestConfig = {
+                headers: {
+                    "nanit-api-version": 1,
+                    "Authorization": "Bearer " + this.access_token
                 },
                 validateStatus: function (status) {
                     return (status >= 200 && status < 300) || status == 401; // default
                 }
             };
-    
-        
-    
+
+
+
             return axios.get("https://api.nanit.com/babies", authenticatedConfig).then((response) => {
                 //we are authenticated nothing to do
-        
-                if (response.status == 401 &&  this.failedCount < 2) {
+
+                if (response.status == 401 && this.failedCount < 2) {
                     this.console.log('failed to auth but received 401 so will clear tokens and try again')
                     this.failedCount++;
                     return this.clearAndLogin()
-                } else if (this.failedCount > 2){
+                } else if (this.failedCount > 2) {
                     return Promise.reject("Exceeded fail count");
                 } else {
                     this.failedCount = 0;
                     this.console.log("Confirmed we are authenticated. Stream should Work")
                 }
             }).catch((error) => {
-                if (error.response.status == 401 &&  this.failedCount < 2) {
+                if (error.response.status == 401 && this.failedCount < 2) {
                     this.console.log('OLD| SHOULD NOT EXECUTE | failed to auth but received 401 so will clear tokens and try again')
                     this.failedCount++;
                     return this.clearAndLogin()
@@ -252,57 +255,57 @@ class NanitCameraPlugin extends ScryptedDeviceBase implements DeviceProvider, Se
                 }
             })
         }
-        
+
         const config = {
-            headers:{
-              "nanit-api-version": 1
+            headers: {
+                "nanit-api-version": 1
             }
-          };
+        };
         if (refresh_token) {
             this.console.log("we have a refresh token...calling the token refresh api");
-            return axios.post("https://api.nanit.com/tokens/refresh",{"refresh_token":refresh_token}, config).then((response) => {
+            return axios.post("https://api.nanit.com/tokens/refresh", { "refresh_token": refresh_token }, config).then((response) => {
                 this.console.log("Received new access token");
                 this.failedCount = 0;
                 this.access_token = response.data.access_token;
                 this.settingsStorage.putSetting("access_token", response.data.access_token)
                 this.settingsStorage.putSetting("refresh_token", response.data.refresh_token)
-                this.settingsStorage.putSetting("expiration",  Date.now() + (1000 * 60 * 60 * 4))
+                this.settingsStorage.putSetting("expiration", Date.now() + (1000 * 60 * 60 * 4))
             }).catch((error) => {
-                this.console.log("Failed to talk to nanit"+ error);
+                this.console.log("Failed to talk to nanit" + error);
             });
         }
 
-        if (!twoFactorCode || ! this.mfa_token) {
+        if (!twoFactorCode || !this.mfa_token) {
             this.console.log("calling the login api without mfa. will need to call again to get access/refresh token");
-            return axios.post("https://api.nanit.com/login",{"email":email,"password":password},config).then((response) => {
-       
+            return axios.post("https://api.nanit.com/login", { "email": email, "password": password }, config).then((response) => {
+
                 this.console.log("Login successful. setting mfa token and will recall login")
                 this.mfa_token = response.data.mfa_token;
             }).catch((error) => {
                 this.mfa_token = error.response.data.mfa_token;
-                if ( this.mfa_token) {
+                if (this.mfa_token) {
                     this.console.log("response from email/pass login:" + error.response)
                 } else {
-                    this.console.log("Failed to talk to nanit"+ error);
+                    this.console.log("Failed to talk to nanit" + error);
                 }
-                
+
             });
         }
 
         this.console.log("calling the login api with mfa to get access and refresh token");
-    
-        return axios.post("https://api.nanit.com/login",{"email":email,"password":password, "mfa_token":  this.mfa_token, "mfa_code": twoFactorCode},config).then((response) => {
+
+        return axios.post("https://api.nanit.com/login", { "email": email, "password": password, "mfa_token": this.mfa_token, "mfa_code": twoFactorCode }, config).then((response) => {
             this.failedCount = 0;
-                this.console.log("response from email/pass/mfa login. Received new access token and refresh token")
-                this.access_token = response.data.access_token;
-                this.settingsStorage.putSetting("access_token", response.data.access_token)
-                this.settingsStorage.putSetting("refresh_token", response.data.refresh_token)
-                this.settingsStorage.putSetting("expiration",  Date.now() + (1000 * 60 * 60 * 4))
-           }).catch((error) => {
-                this.console.log("Failed to talk to nanit"+ error);
-                throw new Error(error.message)
-           });
-        
+            this.console.log("response from email/pass/mfa login. Received new access token and refresh token")
+            this.access_token = response.data.access_token;
+            this.settingsStorage.putSetting("access_token", response.data.access_token)
+            this.settingsStorage.putSetting("refresh_token", response.data.refresh_token)
+            this.settingsStorage.putSetting("expiration", Date.now() + (1000 * 60 * 60 * 4))
+        }).catch((error) => {
+            this.console.log("Failed to talk to nanit" + error);
+            throw new Error(error.message)
+        });
+
     }
 
     getSettings(): Promise<Setting[]> {
@@ -317,9 +320,9 @@ class NanitCameraPlugin extends ScryptedDeviceBase implements DeviceProvider, Se
         this.console.log("Sync Devices")
         await this.tryLogin();
         const config = {
-            headers:{
-              "nanit-api-version": 1,
-              "Authorization": "Bearer " +  this.access_token
+            headers: {
+                "nanit-api-version": 1,
+                "Authorization": "Bearer " + this.access_token
             }
         };
 
@@ -342,7 +345,7 @@ class NanitCameraPlugin extends ScryptedDeviceBase implements DeviceProvider, Se
                 },
                 nativeId,
                 name: camera.name,
-    
+
                 type: ScryptedDeviceType.Camera,
                 interfaces,
             };
@@ -359,14 +362,14 @@ class NanitCameraPlugin extends ScryptedDeviceBase implements DeviceProvider, Se
         this.console.log("get device with id " + nativeId)
         if (!this.devices.has(nativeId)) {
             const camera = new NanitCameraDevice(this, nativeId);
-            
+
             this.devices.set(nativeId, camera);
         }
         return this.devices.get(nativeId);
     }
 
     async releaseDevice(id: string, nativeId: string): Promise<void> {
-        
+
     }
 }
 
