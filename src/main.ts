@@ -239,14 +239,14 @@ class NanitCameraPlugin extends ScryptedDeviceBase implements DeviceProvider, Se
                     this.console.log('failed to auth but received 401 so will clear tokens and try again')
                     this.failedCount++;
                     return this.clearAndLogin()
-                } else if (this.failedCount > 2) {
+                } else if (response.status == 401) {
                     return Promise.reject("Exceeded fail count");
                 } else {
                     this.failedCount = 0;
                     this.console.log("Confirmed we are authenticated. Stream should Work")
                 }
             }).catch((error) => {
-                if (error.response.status == 401 && this.failedCount < 2) {
+                if (error.response?.status == 401 && this.failedCount < 2) {
                     this.console.log('OLD| SHOULD NOT EXECUTE | failed to auth but received 401 so will clear tokens and try again')
                     this.failedCount++;
                     return this.clearAndLogin()
