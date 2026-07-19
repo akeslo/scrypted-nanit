@@ -30,19 +30,9 @@ If you are still having issues then clear the `access_token` and `refresh_token`
 Finally, Login again with your username and password + two factor auth by following instructions in above section
 
 ## Other Notes
-It is currently setup as a Battery camera in Scrypted. The only reason this is done is so that Scrypted doesn't pre-buffer. When the camera is not battery Scrypted will stay connected to the stream 24/7, instead of on demand when the rtsp/homekit stream is requested. I suspect if we stay connected to the Nanit stream 24/7 they would take notice eventually.   
+Pre-buffering is prevented via `allowBatteryPrebuffer: false` in `getVideoStreamOptions` (main.ts), so Scrypted only connects to the Nanit stream on demand instead of staying connected 24/7. Earlier versions of this plugin achieved the same effect by declaring the camera as a Battery device (which Scrypted never pre-buffers); that has been removed since `allowBatteryPrebuffer: false` covers it directly without misrepresenting the device's capabilities.
 
-If you want to disable this. Remove the ScryptedInterface.Battery from line main.ts.  
-```
-const interfaces = [
-                ScryptedInterface.Camera,
-                ScryptedInterface.VideoCamera,
-                ScryptedInterface.MotionSensor,
-                ScryptedInterface.Battery //REMOVE THIS
-            ];
- ```
-
- The Snapshot Photos are not working right now. You may see a "Failed Snapshot" screen until I can get that working. 
+The Snapshot Photos are not working right now. You may see a "Failed Snapshot" screen until I can get that working. 
  
 
 ## Importing into Home Assistant

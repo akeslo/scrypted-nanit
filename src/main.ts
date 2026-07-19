@@ -1,4 +1,4 @@
-import { Battery, BinarySensor, Camera, Device, DeviceCreator, DeviceCreatorSettings, DeviceDiscovery, DeviceProvider, FFmpegInput, Intercom, MediaObject, MediaStreamOptions, MotionSensor, PictureOptions, ResponseMediaStreamOptions, ScryptedDeviceBase, ScryptedDeviceType, ScryptedInterface, ScryptedInterfaceProperty, ScryptedMimeTypes, Setting, Settings, SettingValue, VideoCamera } from '@scrypted/sdk';
+import { BinarySensor, Camera, Device, DeviceCreator, DeviceCreatorSettings, DeviceDiscovery, DeviceProvider, FFmpegInput, Intercom, MediaObject, MediaStreamOptions, MotionSensor, PictureOptions, ResponseMediaStreamOptions, ScryptedDeviceBase, ScryptedDeviceType, ScryptedInterface, ScryptedInterfaceProperty, ScryptedMimeTypes, Setting, Settings, SettingValue, VideoCamera } from '@scrypted/sdk';
 import sdk from '@scrypted/sdk';
 import { StorageSettings } from "@scrypted/sdk/storage-settings"
 import path from 'path';
@@ -9,7 +9,7 @@ import { fail } from 'assert';
 const { log, deviceManager, mediaManager } = sdk;
 
 
-class NanitCameraDevice extends ScryptedDeviceBase implements Intercom, Camera, VideoCamera, MotionSensor, BinarySensor, Battery {
+class NanitCameraDevice extends ScryptedDeviceBase implements Intercom, Camera, VideoCamera, MotionSensor, BinarySensor {
     constructor(public plugin: NanitCameraPlugin, nativeId: string) {
         super(nativeId);
     }
@@ -40,7 +40,6 @@ class NanitCameraDevice extends ScryptedDeviceBase implements Intercom, Camera, 
         if (!this.plugin.access_token) {
             throw new Error("missing access token");
         }
-        this.batteryLevel = 100;
         ffmpegInputVal = this.ffmpegInput(options);
 
 
@@ -335,7 +334,6 @@ class NanitCameraPlugin extends ScryptedDeviceBase implements DeviceProvider, Se
                 ScryptedInterface.Camera,
                 ScryptedInterface.VideoCamera,
                 ScryptedInterface.MotionSensor,
-                //ScryptedInterface.Battery
             ];
 
             const device: Device = {

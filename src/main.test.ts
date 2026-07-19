@@ -451,7 +451,6 @@ describe('NanitCameraDevice.getVideoStream', () => {
         await device.getVideoStream();
 
         expect(plugin.tryLogin).toHaveBeenCalledTimes(1);
-        expect(device.batteryLevel).toBe(100);
         expect(fakeMediaManager.createMediaObject).toHaveBeenCalledTimes(1);
         const [buffer, mimeType] = fakeMediaManager.createMediaObject.mock.calls[0];
         expect(typeof mimeType).toBe('string');
