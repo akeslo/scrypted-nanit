@@ -1,6 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import axios from 'axios';
-import NanitCameraPlugin from './main';
 
 // Mock axios entirely -- no real network calls, no real Nanit credentials ever touched.
 vi.mock('axios', () => ({
@@ -9,6 +8,48 @@ vi.mock('axios', () => ({
         post: vi.fn(),
     },
 }));
+
+/**
+ * @scrypted/sdk's ScryptedDeviceBase (which NanitCameraDevice extends) and
+ * main.ts's own module-level `deviceManager`/`mediaManager` bindings all
+ * resolve to bare, undeclared `deviceManager`/`mediaManager` identifiers that
+ * the real Scrypted plugin host injects as globals at runtime. Outside that
+ * host (i.e. under vitest) those identifiers are simply unbound, so anything
+ * that touches `this.console`, `deviceManager.onDevicesChanged`, or
+ * `mediaManager.createMediaObject` throws a ReferenceError/TypeError unless
+ * the globals are seeded before @scrypted/sdk (and therefore main.ts) is
+ * first loaded. vi.hoisted runs before the static imports below are
+ * evaluated, so this is the one hook point that can seed them in time.
+ */
+const { fakeDeviceManager, fakeMediaManager } = vi.hoisted(() => {
+    const fakeDeviceManager = {
+        getDeviceLogger: vi.fn(() => ({ log: vi.fn() })),
+        getDeviceConsole: vi.fn(() => ({ log: vi.fn() })),
+        getDeviceStorage: vi.fn(() => ({})),
+        getDeviceState: vi.fn(() => ({})),
+        getMixinConsole: vi.fn(() => ({ log: vi.fn() })),
+        getMixinStorage: vi.fn(() => ({})),
+        onDeviceEvent: vi.fn(async () => {}),
+        onMixinEvent: vi.fn(async () => {}),
+        onDevicesChanged: vi.fn(async () => {}),
+        onDeviceDiscovered: vi.fn(async () => {}),
+    };
+    const fakeMediaManager = {
+        createMediaObject: vi.fn(async (data: any, mimeType: any) => ({ __fakeMediaObject: true, mimeType, data })),
+    };
+    (globalThis as any).deviceManager = fakeDeviceManager;
+    (globalThis as any).mediaManager = fakeMediaManager;
+    // @scrypted/sdk's own module-init also touches these bare globals in the
+    // same object-literal assignment as deviceManager/mediaManager; if any of
+    // them is missing, the whole assignment throws before deviceManager and
+    // mediaManager ever get attached to the exported sdk object.
+    (globalThis as any).endpointManager = {};
+    (globalThis as any).systemManager = { setScryptedInterfaceDescriptors: vi.fn() };
+    (globalThis as any).pluginHostAPI = {};
+    return { fakeDeviceManager, fakeMediaManager };
+});
+
+import NanitCameraPlugin from './main';
 
 const mockedAxios = axios as unknown as { get: ReturnType<typeof vi.fn>; post: ReturnType<typeof vi.fn> };
 
@@ -283,5 +324,172 @@ describe('NanitCameraPlugin.tryLogin', () => {
 
             await expect(harness.tryLogin('000000')).rejects.toThrow('bad mfa code');
         });
+    });
+});
+
+/**
+ * Builds a "this"-like object bound to the real NanitCameraPlugin.prototype
+ * methods under test (syncDevices, getDevice), without running the real
+ * constructor. tryLogin is stubbed here -- it has its own dedicated coverage
+ * above -- so these tests isolate device discovery/sync behavior.
+ */
+function createProviderHarness(overrides: Record<string, any> = {}) {
+    const consoleLog = vi.fn();
+    const harness: any = {
+        console: { log: consoleLog },
+        devices: new Map(),
+        access_token: 'provider-token',
+        tryLogin: vi.fn().mockResolvedValue(undefined),
+        syncDevices: (NanitCameraPlugin.prototype as any).syncDevices,
+        getDevice: (NanitCameraPlugin.prototype as any).getDevice,
+        ...overrides,
+    };
+    return { harness, consoleLog };
+}
+
+describe('NanitCameraPlugin.syncDevices', () => {
+    beforeEach(() => {
+        mockedAxios.get.mockReset();
+        mockedAxios.post.mockReset();
+        fakeDeviceManager.onDevicesChanged.mockClear();
+    });
+
+    it('fetches the babies list and reports discovered devices to deviceManager', async () => {
+        const { harness } = createProviderHarness();
+        mockedAxios.get.mockResolvedValueOnce({
+            data: {
+                babies: [
+                    { uid: 'baby-1', name: 'Nursery' },
+                    { uid: 'baby-2', name: 'Playroom' },
+                ],
+            },
+        });
+
+        await harness.syncDevices(0);
+
+        expect(harness.tryLogin).toHaveBeenCalledTimes(1);
+        expect(mockedAxios.get).toHaveBeenCalledWith(
+            'https://api.nanit.com/babies',
+            expect.objectContaining({
+                headers: expect.objectContaining({ Authorization: 'Bearer provider-token' }),
+            }),
+        );
+        expect(fakeDeviceManager.onDevicesChanged).toHaveBeenCalledTimes(1);
+        const [{ devices }] = fakeDeviceManager.onDevicesChanged.mock.calls[0];
+        expect(devices).toHaveLength(2);
+        expect(devices[0]).toEqual(
+            expect.objectContaining({
+                nativeId: 'baby-1',
+                name: 'Nursery',
+                interfaces: expect.arrayContaining(['Camera', 'VideoCamera', 'MotionSensor']),
+            }),
+        );
+        expect(devices[1]).toEqual(expect.objectContaining({ nativeId: 'baby-2', name: 'Playroom' }));
+    });
+
+    it('reports an empty device list when the account has no babies', async () => {
+        const { harness } = createProviderHarness();
+        mockedAxios.get.mockResolvedValueOnce({ data: { babies: [] } });
+
+        await harness.syncDevices(0);
+
+        expect(fakeDeviceManager.onDevicesChanged).toHaveBeenCalledWith({ devices: [] });
+    });
+
+    it('propagates a login failure without calling onDevicesChanged', async () => {
+        const { harness } = createProviderHarness({
+            tryLogin: vi.fn().mockRejectedValue(new Error('Failed to authenticate')),
+        });
+
+        await expect(harness.syncDevices(0)).rejects.toThrow('Failed to authenticate');
+
+        expect(mockedAxios.get).not.toHaveBeenCalled();
+        expect(fakeDeviceManager.onDevicesChanged).not.toHaveBeenCalled();
+    });
+});
+
+describe('NanitCameraPlugin.getDevice', () => {
+    it('instantiates and caches a device by nativeId', async () => {
+        const { harness } = createProviderHarness();
+
+        const device = await harness.getDevice('baby-1');
+        const again = await harness.getDevice('baby-1');
+
+        expect(device).toBeDefined();
+        expect(again).toBe(device);
+        expect(harness.devices.get('baby-1')).toBe(device);
+    });
+
+    it('creates independent instances for different nativeIds', async () => {
+        const { harness } = createProviderHarness();
+
+        const first = await harness.getDevice('baby-1');
+        const second = await harness.getDevice('baby-2');
+
+        expect(first).not.toBe(second);
+        expect(harness.devices.size).toBe(2);
+    });
+});
+
+describe('NanitCameraDevice.getVideoStream', () => {
+    beforeEach(() => {
+        fakeMediaManager.createMediaObject.mockClear();
+    });
+
+    it('constructs the FFmpeg RTMPS input using nativeId + access_token', async () => {
+        const { harness } = createProviderHarness({ access_token: 'device-access-token' });
+        const plugin = {
+            tryLogin: vi.fn().mockResolvedValue(undefined),
+            access_token: 'device-access-token',
+        };
+        // getDevice() is the only way to obtain a real NanitCameraDevice
+        // instance -- the class itself is not exported from main.ts.
+        harness.access_token = plugin.access_token;
+        const device: any = await harness.getDevice('baby-1');
+        device.plugin = plugin;
+
+        await device.getVideoStream();
+
+        expect(plugin.tryLogin).toHaveBeenCalledTimes(1);
+        expect(device.batteryLevel).toBe(100);
+        expect(fakeMediaManager.createMediaObject).toHaveBeenCalledTimes(1);
+        const [buffer, mimeType] = fakeMediaManager.createMediaObject.mock.calls[0];
+        expect(typeof mimeType).toBe('string');
+        const ffmpegInput = JSON.parse(buffer.toString());
+        expect(ffmpegInput.container).toBe('flv');
+        expect(ffmpegInput.inputArguments).toContain(
+            'rtmps://media-secured.nanit.com/nanit/baby-1.device-access-token',
+        );
+    });
+
+    it('throws when nativeId is missing', async () => {
+        const { harness } = createProviderHarness();
+        const plugin = { tryLogin: vi.fn().mockResolvedValue(undefined), access_token: 'device-access-token' };
+        const device: any = await harness.getDevice('');
+        device.plugin = plugin;
+
+        await expect(device.getVideoStream()).rejects.toThrow('missing nativeId');
+    });
+
+    it('throws when the plugin has no access token', async () => {
+        const { harness } = createProviderHarness();
+        const plugin = { tryLogin: vi.fn().mockResolvedValue(undefined), access_token: '' };
+        const device: any = await harness.getDevice('baby-1');
+        device.plugin = plugin;
+
+        await expect(device.getVideoStream()).rejects.toThrow('missing access token');
+    });
+
+    it('propagates a login failure from tryLogin', async () => {
+        const { harness } = createProviderHarness();
+        const plugin = {
+            tryLogin: vi.fn().mockRejectedValue(new Error('Failed to authenticate')),
+            access_token: 'device-access-token',
+        };
+        const device: any = await harness.getDevice('baby-1');
+        device.plugin = plugin;
+
+        await expect(device.getVideoStream()).rejects.toThrow('Failed to authenticate');
+        expect(fakeMediaManager.createMediaObject).not.toHaveBeenCalled();
     });
 });
