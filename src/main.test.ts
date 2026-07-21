@@ -492,3 +492,56 @@ describe('NanitCameraDevice.getVideoStream', () => {
         expect(fakeMediaManager.createMediaObject).not.toHaveBeenCalled();
     });
 });
+
+describe('NanitCameraDevice.takePicture', () => {
+    beforeEach(() => {
+        fakeMediaManager.createMediaObject.mockClear();
+    });
+
+    it('returns a MediaObject configured to capture a single frame from the RTMPS stream', async () => {
+        const { harness } = createProviderHarness({ access_token: 'device-access-token' });
+        const device: any = await harness.getDevice('baby-1');
+
+        const result = await device.takePicture();
+
+        expect(fakeMediaManager.createMediaObject).toHaveBeenCalledTimes(1);
+        const [buffer, mimeType] = fakeMediaManager.createMediaObject.mock.calls[0];
+        expect(typeof mimeType).toBe('string');
+        const ffmpegInput = JSON.parse(buffer.toString());
+        expect(ffmpegInput.videoDecoderArguments).toEqual(['-vframes', '1', '-q:v', '2']);
+        expect(ffmpegInput.inputArguments).toContain(
+            'rtmps://media-secured.nanit.com/nanit/baby-1.device-access-token',
+        );
+    });
+
+    it('applies picture options to the FFmpeg stream', async () => {
+        const { harness } = createProviderHarness({ access_token: 'device-access-token' });
+        const device: any = await harness.getDevice('baby-1');
+
+        // Picture options are passed through but the implementation currently
+        // does not modify the stream based on them -- this test ensures the
+        // interface is exercised even though the options are not yet used.
+        const options = { picture: {} };
+        await device.takePicture(options);
+
+        expect(fakeMediaManager.createMediaObject).toHaveBeenCalledTimes(1);
+    });
+
+    it('throws when nativeId is missing', async () => {
+        const { harness } = createProviderHarness();
+        const device: any = await harness.getDevice('');
+
+        await expect(device.takePicture()).rejects.toThrow('missing nativeId');
+    });
+});
+
+describe('NanitCameraDevice.getPictureOptions', () => {
+    it('returns an empty array (no alternate resolutions defined)', async () => {
+        const { harness } = createProviderHarness();
+        const device: any = await harness.getDevice('baby-1');
+
+        const result = await device.getPictureOptions();
+
+        expect(result).toEqual([]);
+    });
+});

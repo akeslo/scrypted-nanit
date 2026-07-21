@@ -14,7 +14,19 @@ class NanitCameraDevice extends ScryptedDeviceBase implements Intercom, Camera, 
     }
 
     async takePicture(options?: PictureOptions): Promise<MediaObject> {
+        // KNOWN ISSUE: Snapshot capture is not working reliably. The implementation
+        // attempts to extract a single frame from the RTMPS stream using FFmpeg options,
+        // but the Nanit API does not appear to support still-frame extraction via the
+        // video stream. Users will see a "Failed Snapshot" screen when attempting to
+        // capture a picture. A proper fix would require implementing snapshot capture
+        // via a separate Nanit API endpoint, if one exists.
         this.console.log("trying to take a photo")
+        if (!this.nativeId) {
+            throw new Error("missing nativeId");
+        }
+        if (!this.plugin.access_token) {
+            throw new Error("missing access token");
+        }
         let ffmpegInputVal: FFmpegInput;
         ffmpegInputVal = this.ffmpegInput(options);
         ffmpegInputVal.videoDecoderArguments = ['-vframes', '1', '-q:v', '2']
@@ -178,7 +190,7 @@ class NanitCameraPlugin extends ScryptedDeviceBase implements DeviceProvider, Se
     }
 
     clearAndTrySyncDevices() {
-        // add code to clear any r
+        // Clear stored tokens and re-sync devices when user credentials change.
         this.console.log("clearAndTrySyncDevices called");
         this.access_token = '';
         this.settingsStorage.putSetting("access_token", '');
