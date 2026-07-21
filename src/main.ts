@@ -4,7 +4,6 @@ import { StorageSettings } from "@scrypted/sdk/storage-settings"
 import path from 'path';
 
 import axios, { AxiosRequestConfig } from 'axios'
-import { fail } from 'assert';
 
 const { log, deviceManager, mediaManager } = sdk;
 
@@ -25,7 +24,7 @@ class NanitCameraDevice extends ScryptedDeviceBase implements Intercom, Camera, 
     async getPictureOptions(): Promise<PictureOptions[]> {
         // can optionally provide the different resolutions of images that are available.
         // used by homekit, if available.
-        return;
+        return [];
     }
 
     async getVideoStream(options?: MediaStreamOptions): Promise<MediaObject> {
@@ -78,11 +77,8 @@ class NanitCameraDevice extends ScryptedDeviceBase implements Intercom, Camera, 
 
 
     async startIntercom(media: MediaObject): Promise<void> {
-        const ffmpegInput: FFmpegInput = JSON.parse((await mediaManager.convertMediaObjectToBuffer(media, ScryptedMimeTypes.FFmpegInput)).toString());
-        // something wants to start playback on the camera speaker.
-        // use their ffmpeg input arguments to spawn ffmpeg to do playback.
-        // some implementations read the data from an ffmpeg pipe output and POST to a url (like unifi/amcrest).
-        throw new Error('not implemented');
+        // Intercom not supported by Nanit API; silently no-op rather than throwing.
+        this.console.log('Intercom requested but not supported by this camera');
     }
 
     async stopIntercom(): Promise<void> {
@@ -245,13 +241,7 @@ class NanitCameraPlugin extends ScryptedDeviceBase implements DeviceProvider, Se
                     this.console.log("Confirmed we are authenticated. Stream should Work")
                 }
             }).catch((error) => {
-                if (error.response?.status == 401 && this.failedCount < 2) {
-                    this.console.log('OLD| SHOULD NOT EXECUTE | failed to auth but received 401 so will clear tokens and try again')
-                    this.failedCount++;
-                    return this.clearAndLogin()
-                } else {
-                    throw new Error("Failed to authenticate")
-                }
+                throw new Error("Failed to authenticate")
             })
         }
 
