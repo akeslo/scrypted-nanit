@@ -282,8 +282,8 @@ class NanitCameraPlugin extends ScryptedDeviceBase implements DeviceProvider, Se
                 this.console.log("Login successful. setting mfa token and will recall login")
                 this.mfa_token = response.data.mfa_token;
             }).catch((error) => {
-                this.mfa_token = error.response.data.mfa_token;
-                if (this.mfa_token) {
+                if (error.response?.data?.mfa_token) {
+                    this.mfa_token = error.response.data.mfa_token;
                     this.console.log("response from email/pass login:" + error.response)
                 } else {
                     this.console.log("Failed to talk to nanit" + error);
