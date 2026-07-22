@@ -221,7 +221,6 @@ class NanitCameraPlugin extends ScryptedDeviceBase implements DeviceProvider, Se
         if (!email || !password) {
             this.console.log("Email and password required");
             throw new Error("Email and password required");
-            return;
         }
         if (this.access_token && expiration > Date.now()) {
             //we already have a good access token that isn't expired
@@ -253,7 +252,7 @@ class NanitCameraPlugin extends ScryptedDeviceBase implements DeviceProvider, Se
                     this.console.log("Confirmed we are authenticated. Stream should Work")
                 }
             }).catch((error) => {
-                throw new Error("Failed to authenticate")
+                throw new Error("Failed to authenticate: " + (error.message || error.toString()))
             })
         }
 
@@ -272,7 +271,7 @@ class NanitCameraPlugin extends ScryptedDeviceBase implements DeviceProvider, Se
                 this.settingsStorage.putSetting("refresh_token", response.data.refresh_token)
                 this.settingsStorage.putSetting("expiration", Date.now() + (1000 * 60 * 60 * 4))
             }).catch((error) => {
-                this.console.log("Failed to talk to nanit" + error);
+                this.console.log("Failed to refresh token: " + (error.message || error.toString()));
             });
         }
 
@@ -303,8 +302,8 @@ class NanitCameraPlugin extends ScryptedDeviceBase implements DeviceProvider, Se
             this.settingsStorage.putSetting("refresh_token", response.data.refresh_token)
             this.settingsStorage.putSetting("expiration", Date.now() + (1000 * 60 * 60 * 4))
         }).catch((error) => {
-            this.console.log("Failed to talk to nanit" + error);
-            throw new Error(error.message)
+            this.console.log("Failed to login with MFA: " + (error.message || error.toString()));
+            throw new Error("MFA login failed: " + (error.message || error.toString()))
         });
 
     }
@@ -327,8 +326,12 @@ class NanitCameraPlugin extends ScryptedDeviceBase implements DeviceProvider, Se
             }
         };
 
-
-        const babies: any[] = (await axios.get("https://api.nanit.com/babies", config)).data.babies;
+        const response = await axios.get("https://api.nanit.com/babies", config);
+        if (!response.data || !Array.isArray(response.data.babies)) {
+            this.console.log("Invalid response structure from Nanit API: expected {babies: array}");
+            throw new Error("Invalid babies response from Nanit API");
+        }
+        const babies: any[] = response.data.babies;
         const devices: Device[] = [];
         for (const camera of babies) {
             const nativeId = camera.uid;
