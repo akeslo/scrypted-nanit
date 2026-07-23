@@ -9,6 +9,9 @@ const { log, deviceManager, mediaManager } = sdk;
 
 
 class NanitCameraDevice extends ScryptedDeviceBase implements Intercom, Camera, VideoCamera, MotionSensor, BinarySensor {
+    private motionTimeoutId: NodeJS.Timeout | null = null;
+    private binaryStateTimeoutId: NodeJS.Timeout | null = null;
+
     constructor(public plugin: NanitCameraPlugin, nativeId: string) {
         super(nativeId);
     }
@@ -100,14 +103,30 @@ class NanitCameraDevice extends ScryptedDeviceBase implements Intercom, Camera, 
     // so set a timeout ourselves to reset the state.
     triggerBinaryState() {
         this.binaryState = true;
-        setTimeout(() => this.binaryState = false, 10000);
+        // Clear existing timeout before setting a new one to prevent stacking
+        if (this.binaryStateTimeoutId) {
+            clearTimeout(this.binaryStateTimeoutId);
+        }
+        const timeoutMs = this.plugin.getMotionTimeoutMs();
+        this.binaryStateTimeoutId = setTimeout(() => {
+            this.binaryState = false;
+            this.binaryStateTimeoutId = null;
+        }, timeoutMs);
     }
 
     // most cameras have have motion and doorbell press events, but dont notify when the event ends.
     // so set a timeout ourselves to reset the state.
     triggerMotion() {
         this.motionDetected = true;
-        setTimeout(() => this.motionDetected = false, 10000);
+        // Clear existing timeout before setting a new one to prevent stacking
+        if (this.motionTimeoutId) {
+            clearTimeout(this.motionTimeoutId);
+        }
+        const timeoutMs = this.plugin.getMotionTimeoutMs();
+        this.motionTimeoutId = setTimeout(() => {
+            this.motionDetected = false;
+            this.motionTimeoutId = null;
+        }, timeoutMs);
     }
 }
 
@@ -148,12 +167,27 @@ class NanitCameraPlugin extends ScryptedDeviceBase implements DeviceProvider, Se
             title: 'expiration',
             onPut: async () => this.syncDevices(0),
         },
+        motionTimeoutMs: {
+            title: 'Motion Sensor Timeout (ms)',
+            description: 'How long (in milliseconds) to keep motion/binary sensor states active after an event before resetting them. Default: 10000 (10 seconds).',
+            type: 'number',
+            defaultValue: 10000,
+        },
     });
 
     constructor() {
         super();
         this.console.log("calling syncDevices from constructor")
         this.syncDevices(0);
+    }
+
+    getMotionTimeoutMs(): number {
+        const stored = this.settingsStorage.getItem("motionTimeoutMs");
+        if (stored !== undefined && stored !== null && stored !== '') {
+            const parsed = parseInt(String(stored), 10);
+            return !isNaN(parsed) && parsed > 0 ? parsed : 10000;
+        }
+        return 10000;
     }
 
     async getCreateDeviceSettings(): Promise<Setting[]> {
