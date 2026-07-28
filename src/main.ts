@@ -245,7 +245,8 @@ class NanitCameraPlugin extends ScryptedDeviceBase implements DeviceProvider, Se
         const email: String = this.settingsStorage.getItem("email");
         const password: String = this.settingsStorage.getItem("password");
         let saved_access_token = this.settingsStorage.getItem("access_token")
-        const expiration = this.settingsStorage.getItem("expiration")
+        const expirationRaw = this.settingsStorage.getItem("expiration")
+        const expiration = typeof expirationRaw === 'number' ? expirationRaw : Number(expirationRaw) || 0;
         const refresh_token = this.settingsStorage.getItem("refresh_token")
 
         if (saved_access_token) {
