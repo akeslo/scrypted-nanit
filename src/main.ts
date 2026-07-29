@@ -178,7 +178,9 @@ class NanitCameraPlugin extends ScryptedDeviceBase implements DeviceProvider, Se
     constructor() {
         super();
         this.console.log("calling syncDevices from constructor")
-        this.syncDevices(0);
+        this.syncDevices(0).catch((err) => {
+            this.console.log("syncDevices failed during startup: " + (err?.message || err));
+        });
     }
 
     getMotionTimeoutMs(): number {
@@ -228,7 +230,9 @@ class NanitCameraPlugin extends ScryptedDeviceBase implements DeviceProvider, Se
         this.console.log("clearAndTrySyncDevices called");
         this.access_token = '';
         this.settingsStorage.putSetting("access_token", '');
-        this.syncDevices(0);
+        this.syncDevices(0).catch((err) => {
+            this.console.log("syncDevices failed after credential change: " + (err?.message || err));
+        });
     }
 
     async clearAndLogin() {
