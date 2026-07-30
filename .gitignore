@@ -1,9 +1,5 @@
-<<<<<<< HEAD
 .DS_Store
-out/
-node_modules/
-dist/
-=======
+
 # Logs
 logs
 *.log
@@ -91,11 +87,11 @@ web_modules/
 
 # Next.js build output
 .next
-out
+out/
 
 # Nuxt.js build / generate output
 .nuxt
-dist
+dist/
 
 # Gatsby files
 .cache/
@@ -134,5 +130,5 @@ dist
 .yarn/build-state.yml
 .yarn/install-state.gz
 .pnp.*
->>>>>>> 1927793a515b7cca891b53be8f86e518d706e3d7
+
 .claude/
