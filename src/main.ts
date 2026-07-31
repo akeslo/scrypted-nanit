@@ -99,6 +99,20 @@ class NanitCameraDevice extends ScryptedDeviceBase implements Intercom, Camera, 
     async stopIntercom(): Promise<void> {
     }
 
+    // Called when the plugin drops this device. Pending motion/binary timers hold a
+    // reference to the device and would still fire (mutating state on a device the
+    // host has already released), so clear them explicitly.
+    release() {
+        if (this.motionTimeoutId) {
+            clearTimeout(this.motionTimeoutId);
+            this.motionTimeoutId = null;
+        }
+        if (this.binaryStateTimeoutId) {
+            clearTimeout(this.binaryStateTimeoutId);
+            this.binaryStateTimeoutId = null;
+        }
+    }
+
     // most cameras have have motion and doorbell press events, but dont notify when the event ends.
     // so set a timeout ourselves to reset the state.
     triggerBinaryState() {
@@ -207,13 +221,22 @@ class NanitCameraPlugin extends ScryptedDeviceBase implements DeviceProvider, Se
 
     async createDevice(settings: DeviceCreatorSettings): Promise<string> {
         const nativeId = settings.baby_uid?.toString();
+        // Without a baby_uid there is no stream URL to build, and returning
+        // undefined from a Promise<string> left the host holding a device it
+        // could never resolve.
+        if (!nativeId)
+            throw new Error("baby_uid is required to create a Nanit camera");
 
         await deviceManager.onDeviceDiscovered({
             nativeId,
             type: ScryptedDeviceType.Camera,
+            // Keep this in step with syncDevices() -- a manually created camera
+            // that omits the sensor interfaces silently loses motion/binary events.
             interfaces: [
                 ScryptedInterface.VideoCamera,
                 ScryptedInterface.Camera,
+                ScryptedInterface.MotionSensor,
+                ScryptedInterface.BinarySensor,
             ],
             name: settings.name?.toString(),
         });
@@ -302,33 +325,49 @@ class NanitCameraPlugin extends ScryptedDeviceBase implements DeviceProvider, Se
         };
         if (refresh_token) {
             this.console.log("we have a refresh token...calling the token refresh api");
-            return axios.post("https://api.nanit.com/tokens/refresh", { "refresh_token": refresh_token }, config).then((response) => {
+            try {
+                const response = await axios.post("https://api.nanit.com/tokens/refresh", { "refresh_token": refresh_token }, config);
                 this.console.log("Received new access token");
                 this.failedCount = 0;
                 this.access_token = response.data.access_token;
                 this.settingsStorage.putSetting("access_token", response.data.access_token)
                 this.settingsStorage.putSetting("refresh_token", response.data.refresh_token)
                 this.settingsStorage.putSetting("expiration", Date.now() + (1000 * 60 * 60 * 4))
-            }).catch((error) => {
-                this.console.log("Failed to refresh token: " + (error.message || error.toString()));
-            });
+                return;
+            } catch (error: any) {
+                // A failed refresh used to resolve successfully, which left callers
+                // (getVideoStream/syncDevices) running with a stale or empty access
+                // token and produced an opaque downstream failure. Discard the dead
+                // credentials and fall through to the email/password login below --
+                // the same recovery the README's Troubleshooting section describes
+                // doing by hand.
+                this.console.log("Failed to refresh token, discarding stored tokens and falling back to login: " + (error?.message || error));
+                this.access_token = '';
+                this.settingsStorage.putSetting("access_token", '')
+                this.settingsStorage.putSetting("refresh_token", '')
+                this.settingsStorage.putSetting("expiration", 0)
+            }
         }
 
         if (!twoFactorCode || !this.mfa_token) {
             this.console.log("calling the login api without mfa. will need to call again to get access/refresh token");
-            return axios.post("https://api.nanit.com/login", { "email": email, "password": password }, config).then((response) => {
-
+            try {
+                const response = await axios.post("https://api.nanit.com/login", { "email": email, "password": password }, config);
                 this.console.log("Login successful. setting mfa token and will recall login")
                 this.mfa_token = response.data.mfa_token;
-            }).catch((error) => {
+                return;
+            } catch (error: any) {
                 if (error.response?.data?.mfa_token) {
                     this.mfa_token = error.response.data.mfa_token;
-                    this.console.log("response from email/pass login:" + error.response)
-                } else {
-                    this.console.log("Failed to talk to nanit" + error);
+                    this.console.log("received an mfa challenge from the email/pass login; awaiting two factor code")
+                    return;
                 }
-
-            });
+                // Neither an access token nor an MFA challenge came back, so there is
+                // nothing for the caller to proceed with -- surface it instead of
+                // resolving and letting the next API call fail with a bare 401.
+                this.console.log("Failed to talk to nanit: " + (error?.message || error));
+                throw new Error("Nanit login failed: " + (error?.message || error));
+            }
         }
 
         this.console.log("calling the login api with mfa to get access and refresh token");
@@ -412,7 +451,12 @@ class NanitCameraPlugin extends ScryptedDeviceBase implements DeviceProvider, Se
     }
 
     async releaseDevice(id: string, nativeId: string): Promise<void> {
-
+        const device = this.devices.get(nativeId);
+        if (!device)
+            return;
+        device.release();
+        this.devices.delete(nativeId);
+        this.console.log("released device with id " + nativeId);
     }
 }
 

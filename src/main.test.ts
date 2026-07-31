@@ -236,16 +236,29 @@ describe('NanitCameraPlugin.tryLogin', () => {
             expect(settingsStorage.putSetting).toHaveBeenCalledWith('expiration', expect.any(Number));
         });
 
-        it('logs but does not throw when the refresh call fails', async () => {
-            const { harness } = createPluginHarness({
+        it('discards the dead tokens and falls back to email/password login when the refresh call fails', async () => {
+            const { harness, settingsStorage } = createPluginHarness({
                 email: 'parent@example.com',
                 password: 'hunter2',
                 refresh_token: 'refresh-abc',
             });
 
-            mockedAxios.post.mockRejectedValueOnce(new Error('network blip'));
+            mockedAxios.post
+                .mockRejectedValueOnce(new Error('network blip'))
+                .mockResolvedValueOnce({ data: { mfa_token: 'mfa-789' } });
 
             await expect(harness.tryLogin()).resolves.toBeUndefined();
+
+            expect(settingsStorage.putSetting).toHaveBeenCalledWith('access_token', '');
+            expect(settingsStorage.putSetting).toHaveBeenCalledWith('refresh_token', '');
+            expect(settingsStorage.putSetting).toHaveBeenCalledWith('expiration', 0);
+            expect(mockedAxios.post).toHaveBeenCalledTimes(2);
+            expect(mockedAxios.post).toHaveBeenLastCalledWith(
+                'https://api.nanit.com/login',
+                { email: 'parent@example.com', password: 'hunter2' },
+                expect.anything(),
+            );
+            expect(harness.mfa_token).toBe('mfa-789');
         });
     });
 
@@ -281,6 +294,18 @@ describe('NanitCameraPlugin.tryLogin', () => {
             await harness.tryLogin();
 
             expect(harness.mfa_token).toBe('mfa-456');
+        });
+
+        it('throws when the initial login fails without returning an mfa challenge', async () => {
+            const { harness } = createPluginHarness({
+                email: 'parent@example.com',
+                password: 'hunter2',
+            });
+
+            mockedAxios.post.mockRejectedValueOnce(new Error('nanit is down'));
+
+            await expect(harness.tryLogin()).rejects.toThrow('Nanit login failed');
+            expect(harness.access_token).toBe('');
         });
 
         it('completes login with email/password + mfa_token + code and stores the new tokens', async () => {
@@ -342,6 +367,8 @@ function createProviderHarness(overrides: Record<string, any> = {}) {
         tryLogin: vi.fn().mockResolvedValue(undefined),
         syncDevices: (NanitCameraPlugin.prototype as any).syncDevices,
         getDevice: (NanitCameraPlugin.prototype as any).getDevice,
+        releaseDevice: (NanitCameraPlugin.prototype as any).releaseDevice,
+        createDevice: (NanitCameraPlugin.prototype as any).createDevice,
         ...overrides,
     };
     return { harness, consoleLog };
@@ -428,6 +455,62 @@ describe('NanitCameraPlugin.getDevice', () => {
 
         expect(first).not.toBe(second);
         expect(harness.devices.size).toBe(2);
+    });
+});
+
+describe('NanitCameraPlugin.releaseDevice', () => {
+    it('drops the cached device and clears its pending sensor timers', async () => {
+        const { harness } = createProviderHarness();
+
+        const device: any = await harness.getDevice('baby-1');
+        const motionFired = vi.fn();
+        const binaryFired = vi.fn();
+        device.motionTimeoutId = setTimeout(motionFired, 10);
+        device.binaryStateTimeoutId = setTimeout(binaryFired, 10);
+
+        await harness.releaseDevice('id-1', 'baby-1');
+
+        expect(device.motionTimeoutId).toBeNull();
+        expect(device.binaryStateTimeoutId).toBeNull();
+        expect(harness.devices.has('baby-1')).toBe(false);
+
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        expect(motionFired).not.toHaveBeenCalled();
+        expect(binaryFired).not.toHaveBeenCalled();
+    });
+
+    it('is a no-op for a nativeId that was never cached', async () => {
+        const { harness } = createProviderHarness();
+
+        await expect(harness.releaseDevice('id-1', 'unknown')).resolves.toBeUndefined();
+    });
+});
+
+describe('NanitCameraPlugin.createDevice', () => {
+    beforeEach(() => {
+        fakeDeviceManager.onDeviceDiscovered.mockClear();
+    });
+
+    it('registers the same interface set syncDevices uses', async () => {
+        const { harness } = createProviderHarness();
+
+        const nativeId = await harness.createDevice({ name: 'Nursery', baby_uid: 'baby-1' });
+
+        expect(nativeId).toBe('baby-1');
+        expect(fakeDeviceManager.onDeviceDiscovered).toHaveBeenCalledWith(
+            expect.objectContaining({
+                nativeId: 'baby-1',
+                name: 'Nursery',
+                interfaces: expect.arrayContaining(['VideoCamera', 'Camera', 'MotionSensor', 'BinarySensor']),
+            }),
+        );
+    });
+
+    it('throws instead of registering a device with no baby_uid', async () => {
+        const { harness } = createProviderHarness();
+
+        await expect(harness.createDevice({ name: 'Nursery' })).rejects.toThrow('baby_uid is required');
+        expect(fakeDeviceManager.onDeviceDiscovered).not.toHaveBeenCalled();
     });
 });
 
