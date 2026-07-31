@@ -236,7 +236,7 @@ class NanitCameraPlugin extends ScryptedDeviceBase implements DeviceProvider, Se
     }
 
     async clearAndLogin() {
-        this.console.log("clearAndLogin called called");
+        this.console.log("clearAndLogin called");
         this.access_token = '';
         this.settingsStorage.putSetting("access_token", '');
         return this.tryLogin('');
@@ -378,6 +378,7 @@ class NanitCameraPlugin extends ScryptedDeviceBase implements DeviceProvider, Se
                 ScryptedInterface.Camera,
                 ScryptedInterface.VideoCamera,
                 ScryptedInterface.MotionSensor,
+                ScryptedInterface.BinarySensor,
             ];
 
             const device: Device = {
