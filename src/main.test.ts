@@ -423,6 +423,15 @@ describe('NanitCameraPlugin.syncDevices', () => {
         expect(fakeDeviceManager.onDevicesChanged).toHaveBeenCalledWith({ devices: [] });
     });
 
+    it('throws a pending-two-factor error when login left no access token', async () => {
+        const { harness } = createProviderHarness({ access_token: '' });
+
+        await expect(harness.syncDevices(0)).rejects.toThrow('Two Factor Code');
+
+        expect(mockedAxios.get).not.toHaveBeenCalled();
+        expect(fakeDeviceManager.onDevicesChanged).not.toHaveBeenCalled();
+    });
+
     it('propagates a login failure without calling onDevicesChanged', async () => {
         const { harness } = createProviderHarness({
             tryLogin: vi.fn().mockRejectedValue(new Error('Failed to authenticate')),
@@ -595,6 +604,26 @@ describe('NanitCameraDevice.takePicture', () => {
         expect(ffmpegInput.inputArguments).toContain(
             'rtmps://media-secured.nanit.com/nanit/baby-1.device-access-token',
         );
+    });
+
+    it('refreshes auth before building the snapshot URL', async () => {
+        const { harness } = createProviderHarness({ access_token: 'device-access-token' });
+        const device: any = await harness.getDevice('baby-1');
+
+        await device.takePicture();
+
+        expect(harness.tryLogin).toHaveBeenCalledTimes(1);
+    });
+
+    it('propagates a login failure from tryLogin', async () => {
+        const { harness } = createProviderHarness({
+            access_token: 'device-access-token',
+            tryLogin: vi.fn().mockRejectedValue(new Error('Failed to authenticate')),
+        });
+        const device: any = await harness.getDevice('baby-1');
+
+        await expect(device.takePicture()).rejects.toThrow('Failed to authenticate');
+        expect(fakeMediaManager.createMediaObject).not.toHaveBeenCalled();
     });
 
     it('applies picture options to the FFmpeg stream', async () => {

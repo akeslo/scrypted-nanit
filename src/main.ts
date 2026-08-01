@@ -27,6 +27,11 @@ class NanitCameraDevice extends ScryptedDeviceBase implements Intercom, Camera, 
         if (!this.nativeId) {
             throw new Error("missing nativeId");
         }
+        // The access token is baked into the RTMPS URL, so a snapshot taken with a
+        // stale token produces a stream that never opens. getVideoStream() already
+        // refreshes auth first; this path did not, which meant snapshots failed on
+        // their own schedule (tokens expire after 4h) even when live view worked.
+        await this.plugin.tryLogin();
         if (!this.plugin.access_token) {
             throw new Error("missing access token");
         }
@@ -268,7 +273,6 @@ class NanitCameraPlugin extends ScryptedDeviceBase implements DeviceProvider, Se
     async tryLogin(twoFactorCode?: string) {
         this.console.log("trying login...");
 
-        const settings: Setting[] = await this.getSettings();
         const email: String = this.settingsStorage.getItem("email");
         const password: String = this.settingsStorage.getItem("password");
         let saved_access_token = this.settingsStorage.getItem("access_token")
@@ -397,6 +401,14 @@ class NanitCameraPlugin extends ScryptedDeviceBase implements DeviceProvider, Se
     async syncDevices(duration: number) {
         this.console.log("Sync Devices")
         await this.tryLogin();
+        // tryLogin() resolves without an access token whenever it only got as far as
+        // an MFA challenge (the two-factor code has not been entered yet). Continuing
+        // from there sends "Bearer " with no token and surfaces as an opaque 401 from
+        // /babies, which reads like a broken plugin rather than a pending login step.
+        if (!this.access_token) {
+            this.console.log("No access token after login; two factor code is likely still required");
+            throw new Error("Not authenticated with Nanit yet - enter the Two Factor Code to finish logging in");
+        }
         const config = {
             headers: {
                 "nanit-api-version": 1,
