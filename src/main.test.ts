@@ -87,8 +87,10 @@ function createPluginHarness(storageInitial: Record<string, any> = {}) {
         access_token: '',
         mfa_token: '',
         failedCount: 0,
+        loginInFlight: null,
         getSettings: (NanitCameraPlugin.prototype as any).getSettings,
         tryLogin: (NanitCameraPlugin.prototype as any).tryLogin,
+        performLogin: (NanitCameraPlugin.prototype as any).performLogin,
         clearAndLogin: (NanitCameraPlugin.prototype as any).clearAndLogin,
         clearAndTrySyncDevices: (NanitCameraPlugin.prototype as any).clearAndTrySyncDevices,
         syncDevices: vi.fn(), // not under test here
@@ -259,6 +261,88 @@ describe('NanitCameraPlugin.tryLogin', () => {
                 expect.anything(),
             );
             expect(harness.mfa_token).toBe('mfa-789');
+        });
+    });
+
+    describe('single-flight coalescing', () => {
+        it('runs one refresh for concurrent tryLogin() callers', async () => {
+            const { harness } = createPluginHarness({
+                email: 'parent@example.com',
+                password: 'hunter2',
+                refresh_token: 'refresh-abc',
+            });
+
+            let resolvePost: (value: any) => void = () => {};
+            mockedAxios.post.mockReturnValueOnce(new Promise((resolve) => { resolvePost = resolve; }));
+
+            const first = harness.tryLogin();
+            const second = harness.tryLogin();
+
+            // Nanit rotates the refresh token, so a second concurrent refresh would
+            // present an already-consumed token and wipe the stored credentials.
+            expect(mockedAxios.post).toHaveBeenCalledTimes(1);
+
+            resolvePost({ data: { access_token: 'new-access-token', refresh_token: 'new-refresh-token' } });
+            await Promise.all([first, second]);
+
+            expect(mockedAxios.post).toHaveBeenCalledTimes(1);
+            expect(harness.access_token).toBe('new-access-token');
+        });
+
+        it('clears the in-flight guard so a later login runs again', async () => {
+            const { harness } = createPluginHarness({
+                email: 'parent@example.com',
+                password: 'hunter2',
+            });
+
+            mockedAxios.post
+                .mockResolvedValueOnce({ data: { mfa_token: 'mfa-1' } })
+                .mockResolvedValueOnce({ data: { mfa_token: 'mfa-2' } });
+
+            await harness.tryLogin();
+            await harness.tryLogin();
+
+            expect(mockedAxios.post).toHaveBeenCalledTimes(2);
+            expect(harness.loginInFlight).toBeNull();
+        });
+
+        it('clears the in-flight guard after a failed login', async () => {
+            const { harness } = createPluginHarness({
+                email: 'parent@example.com',
+                password: 'hunter2',
+            });
+
+            mockedAxios.post.mockRejectedValueOnce(new Error('nanit is down'));
+
+            await expect(harness.tryLogin()).rejects.toThrow('Nanit login failed');
+            expect(harness.loginInFlight).toBeNull();
+        });
+
+        it('never coalesces a two-factor submission into an in-flight login', async () => {
+            const { harness } = createPluginHarness({
+                email: 'parent@example.com',
+                password: 'hunter2',
+            });
+            harness.mfa_token = 'mfa-123';
+
+            let resolveFirst: (value: any) => void = () => {};
+            mockedAxios.post
+                .mockReturnValueOnce(new Promise((resolve) => { resolveFirst = resolve; }))
+                .mockResolvedValueOnce({ data: { access_token: 'final-access-token', refresh_token: 'final-refresh-token' } });
+
+            const pending = harness.tryLogin();
+            const withCode = harness.tryLogin('654321');
+
+            resolveFirst({ data: { mfa_token: 'mfa-123' } });
+            await Promise.all([pending, withCode]);
+
+            expect(mockedAxios.post).toHaveBeenCalledTimes(2);
+            expect(mockedAxios.post).toHaveBeenCalledWith(
+                'https://api.nanit.com/login',
+                expect.objectContaining({ mfa_code: '654321' }),
+                expect.anything(),
+            );
+            expect(harness.access_token).toBe('final-access-token');
         });
     });
 

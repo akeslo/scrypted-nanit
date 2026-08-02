@@ -154,6 +154,12 @@ class NanitCameraPlugin extends ScryptedDeviceBase implements DeviceProvider, Se
     access_token = '';
     mfa_token = '';
     failedCount = 0;
+    // Single-flight guard for tryLogin(). Nanit rotates the refresh token on every
+    // /tokens/refresh call, so two overlapping logins (e.g. syncDevices() at startup
+    // racing a getVideoStream()/takePicture()) both present the same refresh token
+    // and the loser gets rejected -- which discards the stored credentials and drops
+    // the user back to a full email/password + MFA login for no reason.
+    private loginInFlight: Promise<void> | null = null;
 
 
     settingsStorage = new StorageSettings(this, {
@@ -253,12 +259,12 @@ class NanitCameraPlugin extends ScryptedDeviceBase implements DeviceProvider, Se
         return Promise.resolve();
     }
 
-    clearAndTrySyncDevices() {
+    async clearAndTrySyncDevices() {
         // Clear stored tokens and re-sync devices when user credentials change.
         this.console.log("clearAndTrySyncDevices called");
         this.access_token = '';
-        this.settingsStorage.putSetting("access_token", '');
-        this.syncDevices(0).catch((err) => {
+        await this.settingsStorage.putSetting("access_token", '');
+        return this.syncDevices(0).catch((err) => {
             this.console.log("syncDevices failed after credential change: " + (err?.message || err));
         });
     }
@@ -266,11 +272,31 @@ class NanitCameraPlugin extends ScryptedDeviceBase implements DeviceProvider, Se
     async clearAndLogin() {
         this.console.log("clearAndLogin called");
         this.access_token = '';
-        this.settingsStorage.putSetting("access_token", '');
-        return this.tryLogin('');
+        await this.settingsStorage.putSetting("access_token", '');
+        // Call performLogin() directly, not tryLogin(): clearAndLogin() is itself
+        // invoked from inside an in-flight performLogin(), and routing back through
+        // the single-flight guard would return that same pending promise and deadlock.
+        return this.performLogin('');
     }
 
-    async tryLogin(twoFactorCode?: string) {
+    async tryLogin(twoFactorCode?: string): Promise<void> {
+        // A two-factor submission is a distinct, user-initiated login -- never coalesce
+        // it into an in-flight tokenless attempt, which would silently discard the code.
+        if (twoFactorCode)
+            return this.performLogin(twoFactorCode);
+
+        if (this.loginInFlight)
+            return this.loginInFlight;
+
+        const inFlight = this.performLogin().finally(() => {
+            if (this.loginInFlight === inFlight)
+                this.loginInFlight = null;
+        });
+        this.loginInFlight = inFlight;
+        return inFlight;
+    }
+
+    async performLogin(twoFactorCode?: string): Promise<void> {
         this.console.log("trying login...");
 
         const email: String = this.settingsStorage.getItem("email");
@@ -334,9 +360,12 @@ class NanitCameraPlugin extends ScryptedDeviceBase implements DeviceProvider, Se
                 this.console.log("Received new access token");
                 this.failedCount = 0;
                 this.access_token = response.data.access_token;
-                this.settingsStorage.putSetting("access_token", response.data.access_token)
-                this.settingsStorage.putSetting("refresh_token", response.data.refresh_token)
-                this.settingsStorage.putSetting("expiration", Date.now() + (1000 * 60 * 60 * 4))
+                // putSetting() is async. Dropping the promise meant a rejected storage
+                // write surfaced as an unhandled rejection, and the next getItem() could
+                // still read the previous value.
+                await this.settingsStorage.putSetting("access_token", response.data.access_token)
+                await this.settingsStorage.putSetting("refresh_token", response.data.refresh_token)
+                await this.settingsStorage.putSetting("expiration", Date.now() + (1000 * 60 * 60 * 4))
                 return;
             } catch (error: any) {
                 // A failed refresh used to resolve successfully, which left callers
@@ -347,9 +376,9 @@ class NanitCameraPlugin extends ScryptedDeviceBase implements DeviceProvider, Se
                 // doing by hand.
                 this.console.log("Failed to refresh token, discarding stored tokens and falling back to login: " + (error?.message || error));
                 this.access_token = '';
-                this.settingsStorage.putSetting("access_token", '')
-                this.settingsStorage.putSetting("refresh_token", '')
-                this.settingsStorage.putSetting("expiration", 0)
+                await this.settingsStorage.putSetting("access_token", '')
+                await this.settingsStorage.putSetting("refresh_token", '')
+                await this.settingsStorage.putSetting("expiration", 0)
             }
         }
 
@@ -376,13 +405,13 @@ class NanitCameraPlugin extends ScryptedDeviceBase implements DeviceProvider, Se
 
         this.console.log("calling the login api with mfa to get access and refresh token");
 
-        return axios.post("https://api.nanit.com/login", { "email": email, "password": password, "mfa_token": this.mfa_token, "mfa_code": twoFactorCode }, config).then((response) => {
+        return axios.post("https://api.nanit.com/login", { "email": email, "password": password, "mfa_token": this.mfa_token, "mfa_code": twoFactorCode }, config).then(async (response) => {
             this.failedCount = 0;
             this.console.log("response from email/pass/mfa login. Received new access token and refresh token")
             this.access_token = response.data.access_token;
-            this.settingsStorage.putSetting("access_token", response.data.access_token)
-            this.settingsStorage.putSetting("refresh_token", response.data.refresh_token)
-            this.settingsStorage.putSetting("expiration", Date.now() + (1000 * 60 * 60 * 4))
+            await this.settingsStorage.putSetting("access_token", response.data.access_token)
+            await this.settingsStorage.putSetting("refresh_token", response.data.refresh_token)
+            await this.settingsStorage.putSetting("expiration", Date.now() + (1000 * 60 * 60 * 4))
         }).catch((error) => {
             this.console.log("Failed to login with MFA: " + (error.message || error.toString()));
             throw new Error("MFA login failed: " + (error.message || error.toString()))
