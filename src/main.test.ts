@@ -854,3 +854,87 @@ describe('NanitCameraPlugin.performLogin — two factor code with no mfa_token',
         expect(harness.access_token).toBe('');
     });
 });
+
+describe('NanitCameraPlugin.performLogin — account without two factor', () => {
+    beforeEach(() => {
+        mockedAxios.get.mockReset();
+        mockedAxios.post.mockReset();
+    });
+
+    it('stores the tokens when the email/password login succeeds with no mfa challenge', async () => {
+        const { harness, settingsStorage } = createPluginHarness({
+            email: 'parent@example.com',
+            password: 'hunter2',
+        });
+        harness.mfa_token = '';
+
+        mockedAxios.post.mockResolvedValueOnce({
+            data: { access_token: 'direct-access', refresh_token: 'direct-refresh' },
+        });
+
+        await harness.tryLogin();
+
+        // One call only: there is no challenge to answer.
+        expect(mockedAxios.post).toHaveBeenCalledTimes(1);
+        expect(harness.access_token).toBe('direct-access');
+        expect(settingsStorage.store.access_token).toBe('direct-access');
+        expect(settingsStorage.store.refresh_token).toBe('direct-refresh');
+        expect(settingsStorage.store.expiration).toBeGreaterThan(Date.now());
+        expect(harness.mfa_token).toBe('');
+    });
+});
+
+describe('NanitCameraPlugin.performLogin — mfa_token is single use', () => {
+    beforeEach(() => {
+        mockedAxios.get.mockReset();
+        mockedAxios.post.mockReset();
+    });
+
+    it('clears the spent mfa_token so a later login mints a fresh challenge', async () => {
+        const { harness } = createPluginHarness({
+            email: 'parent@example.com',
+            password: 'hunter2',
+        });
+        harness.mfa_token = 'challenge-token';
+
+        mockedAxios.post.mockResolvedValueOnce({
+            data: { access_token: 'mfa-access', refresh_token: 'mfa-refresh' },
+        });
+
+        await harness.tryLogin('123456');
+
+        expect(harness.mfa_token).toBe('');
+    });
+
+    it('re-acquires a challenge on the next two factor submission instead of reusing the dead one', async () => {
+        const { harness, settingsStorage } = createPluginHarness({
+            email: 'parent@example.com',
+            password: 'hunter2',
+        });
+        harness.mfa_token = 'challenge-token';
+
+        mockedAxios.post.mockResolvedValueOnce({
+            data: { access_token: 'mfa-access', refresh_token: 'mfa-refresh' },
+        });
+        await harness.tryLogin('123456');
+
+        // Second login attempt: the stored tokens are gone (user cleared them per the
+        // README's troubleshooting steps), so it must start from email/password again.
+        harness.access_token = '';
+        settingsStorage.store.access_token = '';
+        settingsStorage.store.refresh_token = '';
+        settingsStorage.store.expiration = 0;
+        mockedAxios.post.mockResolvedValueOnce({ data: { mfa_token: 'fresh-token' } });
+        mockedAxios.post.mockResolvedValueOnce({
+            data: { access_token: 'second-access', refresh_token: 'second-refresh' },
+        });
+
+        await harness.tryLogin('654321');
+
+        expect(mockedAxios.post).toHaveBeenLastCalledWith(
+            'https://api.nanit.com/login',
+            expect.objectContaining({ mfa_token: 'fresh-token', mfa_code: '654321' }),
+            expect.anything(),
+        );
+    });
+});

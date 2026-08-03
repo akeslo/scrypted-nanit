@@ -395,6 +395,21 @@ class NanitCameraPlugin extends ScryptedDeviceBase implements DeviceProvider, Se
             this.console.log("calling the login api without mfa. will need to call again to get access/refresh token");
             try {
                 const response = await axios.post("https://api.nanit.com/login", { "email": email, "password": password }, config);
+                // An account with two-factor disabled gets its tokens back from this
+                // very call and never receives an mfa_token. The old code stored only
+                // response.data.mfa_token (undefined), then returned -- silently
+                // throwing away a completed login and leaving every caller with an
+                // empty access token, so the plugin was unusable without 2FA.
+                if (response.data?.access_token) {
+                    this.console.log("Login successful without an mfa challenge. Storing tokens.")
+                    this.failedCount = 0;
+                    this.mfa_token = '';
+                    this.access_token = response.data.access_token;
+                    await this.settingsStorage.putSetting("access_token", response.data.access_token)
+                    await this.settingsStorage.putSetting("refresh_token", response.data.refresh_token)
+                    await this.settingsStorage.putSetting("expiration", Date.now() + (1000 * 60 * 60 * 4))
+                    return;
+                }
                 this.console.log("Login successful. setting mfa token and will recall login")
                 this.mfa_token = response.data.mfa_token;
                 // If the user supplied a code, we only came here to (re)acquire the
@@ -426,6 +441,12 @@ class NanitCameraPlugin extends ScryptedDeviceBase implements DeviceProvider, Se
         return axios.post("https://api.nanit.com/login", { "email": email, "password": password, "mfa_token": this.mfa_token, "mfa_code": twoFactorCode }, config).then(async (response) => {
             this.failedCount = 0;
             this.console.log("response from email/pass/mfa login. Received new access token and refresh token")
+            // An mfa_token is single-use. Keeping the spent one meant the guard above
+            // ("!twoFactorCode || !this.mfa_token") saw a truthy mfa_token on the next
+            // login, skipped the email/password step that mints a fresh challenge, and
+            // posted the dead token -- so every re-login after the first failed until
+            // the Scrypted host was restarted.
+            this.mfa_token = '';
             this.access_token = response.data.access_token;
             await this.settingsStorage.putSetting("access_token", response.data.access_token)
             await this.settingsStorage.putSetting("refresh_token", response.data.refresh_token)
