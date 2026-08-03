@@ -741,3 +741,116 @@ describe('NanitCameraDevice.getPictureOptions', () => {
         expect(result).toEqual([]);
     });
 });
+
+describe('NanitCameraPlugin.performLogin — request timeouts', () => {
+    beforeEach(() => {
+        mockedAxios.get.mockReset();
+        mockedAxios.post.mockReset();
+    });
+
+    it('bounds the /babies verification request with a timeout', async () => {
+        const { harness } = createPluginHarness({
+            email: 'parent@example.com',
+            password: 'hunter2',
+            access_token: 'valid-token',
+            expiration: Date.now() + 1000 * 60 * 60,
+        });
+        mockedAxios.get.mockResolvedValueOnce({ status: 200, data: { babies: [] } });
+
+        await harness.tryLogin();
+
+        expect(mockedAxios.get).toHaveBeenCalledWith(
+            'https://api.nanit.com/babies',
+            expect.objectContaining({ timeout: expect.any(Number) }),
+        );
+    });
+
+    it('bounds the token refresh request with a timeout', async () => {
+        const { harness } = createPluginHarness({
+            email: 'parent@example.com',
+            password: 'hunter2',
+            refresh_token: 'refresh-me',
+        });
+        mockedAxios.post.mockResolvedValueOnce({
+            data: { access_token: 'new-access', refresh_token: 'new-refresh' },
+        });
+
+        await harness.tryLogin();
+
+        expect(mockedAxios.post).toHaveBeenCalledWith(
+            'https://api.nanit.com/tokens/refresh',
+            expect.anything(),
+            expect.objectContaining({ timeout: expect.any(Number) }),
+        );
+    });
+});
+
+describe('NanitCameraPlugin.performLogin — two factor code with no mfa_token', () => {
+    beforeEach(() => {
+        mockedAxios.get.mockReset();
+        mockedAxios.post.mockReset();
+    });
+
+    it('acquires an mfa_token then spends the supplied code instead of discarding it', async () => {
+        const { harness, settingsStorage } = createPluginHarness({
+            email: 'parent@example.com',
+            password: 'hunter2',
+        });
+        harness.mfa_token = '';
+
+        // First call: email/password login returns the mfa challenge.
+        mockedAxios.post.mockResolvedValueOnce({ data: { mfa_token: 'challenge-token' } });
+        // Second call: the same run immediately submits the code.
+        mockedAxios.post.mockResolvedValueOnce({
+            data: { access_token: 'mfa-access', refresh_token: 'mfa-refresh' },
+        });
+
+        await harness.tryLogin('123456');
+
+        expect(mockedAxios.post).toHaveBeenCalledTimes(2);
+        expect(mockedAxios.post).toHaveBeenLastCalledWith(
+            'https://api.nanit.com/login',
+            expect.objectContaining({ mfa_token: 'challenge-token', mfa_code: '123456' }),
+            expect.anything(),
+        );
+        expect(harness.access_token).toBe('mfa-access');
+        expect(settingsStorage.store.refresh_token).toBe('mfa-refresh');
+    });
+
+    it('spends the code when the challenge arrives as a rejected login', async () => {
+        const { harness } = createPluginHarness({
+            email: 'parent@example.com',
+            password: 'hunter2',
+        });
+        harness.mfa_token = '';
+
+        mockedAxios.post.mockRejectedValueOnce({
+            message: 'mfa required',
+            response: { data: { mfa_token: 'challenge-token' } },
+        });
+        mockedAxios.post.mockResolvedValueOnce({
+            data: { access_token: 'mfa-access', refresh_token: 'mfa-refresh' },
+        });
+
+        await harness.tryLogin('654321');
+
+        expect(mockedAxios.post).toHaveBeenCalledTimes(2);
+        expect(harness.access_token).toBe('mfa-access');
+    });
+
+    it('still stops and waits when no code was supplied', async () => {
+        const { harness } = createPluginHarness({
+            email: 'parent@example.com',
+            password: 'hunter2',
+        });
+        harness.mfa_token = '';
+
+        mockedAxios.post.mockResolvedValueOnce({ data: { mfa_token: 'challenge-token' } });
+
+        await harness.tryLogin();
+
+        expect(mockedAxios.post).toHaveBeenCalledTimes(1);
+        expect(harness.mfa_token).toBe('challenge-token');
+        expect(harness.access_token).toBe('');
+    });
+});

@@ -7,6 +7,13 @@ import axios, { AxiosRequestConfig } from 'axios'
 
 const { log, deviceManager, mediaManager } = sdk;
 
+// Every Nanit API call goes through axios with no default timeout, which means a
+// connection that opens and then stalls never settles. tryLogin() is single-flighted,
+// so one stalled request wedges *every* later getVideoStream()/takePicture()/
+// syncDevices() on the same never-resolving promise -- the plugin looks dead until the
+// Scrypted host is restarted. Bound every request instead.
+const NANIT_REQUEST_TIMEOUT_MS = 15000;
+
 
 class NanitCameraDevice extends ScryptedDeviceBase implements Intercom, Camera, VideoCamera, MotionSensor, BinarySensor {
     private motionTimeoutId: NodeJS.Timeout | null = null;
@@ -319,6 +326,7 @@ class NanitCameraPlugin extends ScryptedDeviceBase implements DeviceProvider, Se
             this.console.log("Access Token Already Exists and is not expired. Going to call babies api to ensure we are logged in")
             //verify we are actually logged in
             const authenticatedConfig: AxiosRequestConfig = {
+                timeout: NANIT_REQUEST_TIMEOUT_MS,
                 headers: {
                     "nanit-api-version": 1,
                     "Authorization": "Bearer " + this.access_token
@@ -349,6 +357,7 @@ class NanitCameraPlugin extends ScryptedDeviceBase implements DeviceProvider, Se
         }
 
         const config = {
+            timeout: NANIT_REQUEST_TIMEOUT_MS,
             headers: {
                 "nanit-api-version": 1
             }
@@ -388,18 +397,27 @@ class NanitCameraPlugin extends ScryptedDeviceBase implements DeviceProvider, Se
                 const response = await axios.post("https://api.nanit.com/login", { "email": email, "password": password }, config);
                 this.console.log("Login successful. setting mfa token and will recall login")
                 this.mfa_token = response.data.mfa_token;
-                return;
+                // If the user supplied a code, we only came here to (re)acquire the
+                // mfa_token -- fall through and spend the code now. Returning here
+                // discarded it, and the caller then reported "enter the Two Factor
+                // Code" to a user who had just entered it. mfa_token is empty on any
+                // fresh plugin start, so this hit every restart mid-login.
+                if (!twoFactorCode || !this.mfa_token)
+                    return;
             } catch (error: any) {
                 if (error.response?.data?.mfa_token) {
                     this.mfa_token = error.response.data.mfa_token;
                     this.console.log("received an mfa challenge from the email/pass login; awaiting two factor code")
-                    return;
+                    if (!twoFactorCode)
+                        return;
+                    this.console.log("two factor code was supplied alongside the challenge; continuing to the mfa login")
+                } else {
+                    // Neither an access token nor an MFA challenge came back, so there is
+                    // nothing for the caller to proceed with -- surface it instead of
+                    // resolving and letting the next API call fail with a bare 401.
+                    this.console.log("Failed to talk to nanit: " + (error?.message || error));
+                    throw new Error("Nanit login failed: " + (error?.message || error));
                 }
-                // Neither an access token nor an MFA challenge came back, so there is
-                // nothing for the caller to proceed with -- surface it instead of
-                // resolving and letting the next API call fail with a bare 401.
-                this.console.log("Failed to talk to nanit: " + (error?.message || error));
-                throw new Error("Nanit login failed: " + (error?.message || error));
             }
         }
 
@@ -439,6 +457,7 @@ class NanitCameraPlugin extends ScryptedDeviceBase implements DeviceProvider, Se
             throw new Error("Not authenticated with Nanit yet - enter the Two Factor Code to finish logging in");
         }
         const config = {
+            timeout: NANIT_REQUEST_TIMEOUT_MS,
             headers: {
                 "nanit-api-version": 1,
                 "Authorization": "Bearer " + this.access_token
