@@ -33,6 +33,14 @@ Finally, Login again with your username and password + two factor auth by follow
 Pre-buffering is prevented via `allowBatteryPrebuffer: false` in `getVideoStreamOptions` (main.ts), so Scrypted only connects to the Nanit stream on demand instead of staying connected 24/7. Earlier versions of this plugin achieved the same effect by declaring the camera as a Battery device (which Scrypted never pre-buffers); that has been removed since `allowBatteryPrebuffer: false` covers it directly without misrepresenting the device's capabilities.
 
 The Snapshot Photos are not working right now. You may see a "Failed Snapshot" screen until I can get that working. 
+
+The Motion and Binary (sound/cry) sensors are declared but never fire. Each camera is
+registered with the `MotionSensor` and `BinarySensor` interfaces, and the plugin has the
+code to raise and auto-reset both states, but nothing subscribes to Nanit's event stream
+yet — so the sensors sit at `false` forever. They show up in Scrypted and in anything
+downstream (HomeKit, Home Assistant), which makes them look wired up: an automation built
+on "motion detected" on a Nanit camera will simply never run. The interfaces are left in
+place so the sensors do not disappear from existing setups when event subscription lands. 
  
 
 ## Importing into Home Assistant

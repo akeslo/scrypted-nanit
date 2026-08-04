@@ -125,6 +125,10 @@ class NanitCameraDevice extends ScryptedDeviceBase implements Intercom, Camera, 
         }
     }
 
+    // NOTE: nothing calls triggerBinaryState()/triggerMotion() — the plugin never
+    // subscribes to Nanit's event stream, so both sensors stay false forever even
+    // though every device advertises MotionSensor/BinarySensor. Documented as a known
+    // limitation in the README; wiring up the event source is what makes them real.
     // most cameras have have motion and doorbell press events, but dont notify when the event ends.
     // so set a timeout ourselves to reset the state.
     triggerBinaryState() {
