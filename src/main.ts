@@ -45,6 +45,18 @@ class NanitCameraDevice extends ScryptedDeviceBase implements Intercom, Camera, 
         let ffmpegInputVal: FFmpegInput;
         ffmpegInputVal = this.ffmpegInput(options);
         ffmpegInputVal.videoDecoderArguments = ['-vframes', '1', '-q:v', '2']
+
+        // Validate FFmpeg input structure before returning
+        if (!ffmpegInputVal.container) {
+            throw new Error("Invalid snapshot configuration: missing container");
+        }
+        if (!Array.isArray(ffmpegInputVal.inputArguments) || ffmpegInputVal.inputArguments.length === 0) {
+            throw new Error("Invalid snapshot configuration: missing inputArguments");
+        }
+        if (!Array.isArray(ffmpegInputVal.videoDecoderArguments) || ffmpegInputVal.videoDecoderArguments.length === 0) {
+            throw new Error("Invalid snapshot configuration: missing videoDecoderArguments");
+        }
+
         return mediaManager.createMediaObject(Buffer.from(JSON.stringify(ffmpegInputVal)), ScryptedMimeTypes.FFmpegInput);
     }
 
@@ -68,6 +80,13 @@ class NanitCameraDevice extends ScryptedDeviceBase implements Intercom, Camera, 
         }
         ffmpegInputVal = this.ffmpegInput(options);
 
+        // Validate FFmpeg input structure before returning
+        if (!ffmpegInputVal.container) {
+            throw new Error("Invalid stream configuration: missing container");
+        }
+        if (!Array.isArray(ffmpegInputVal.inputArguments) || ffmpegInputVal.inputArguments.length === 0) {
+            throw new Error("Invalid stream configuration: missing inputArguments");
+        }
 
         return mediaManager.createMediaObject(Buffer.from(JSON.stringify(ffmpegInputVal)), ScryptedMimeTypes.FFmpegInput);
     }
