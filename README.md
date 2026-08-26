@@ -32,7 +32,12 @@ Finally, Login again with your username and password + two factor auth by follow
 ## Other Notes
 Pre-buffering is prevented via `allowBatteryPrebuffer: false` in `getVideoStreamOptions` (main.ts), so Scrypted only connects to the Nanit stream on demand instead of staying connected 24/7. Earlier versions of this plugin achieved the same effect by declaring the camera as a Battery device (which Scrypted never pre-buffers); that has been removed since `allowBatteryPrebuffer: false` covers it directly without misrepresenting the device's capabilities.
 
-The Snapshot Photos are not working right now. You may see a "Failed Snapshot" screen until I can get that working. 
+Snapshot Photos may show a "Failed Snapshot" screen. This note dates from 2023-05-09 and
+has NOT been re-verified since the snapshot path was reworked: `takePicture` now refreshes
+auth before capturing and fails with an explicit message on a pending 2FA (`12185bc`),
+validates its FFmpeg configuration (`344d20a`), and carries test coverage (`c38b625`). So
+treat a failed snapshot as worth reporting rather than as a known-broken feature — the
+error text should now say which of those it is. 
 
 The Motion and Binary (sound/cry) sensors are declared but never fire. Each camera is
 registered with the `MotionSensor` and `BinarySensor` interfaces, and the plugin has the
