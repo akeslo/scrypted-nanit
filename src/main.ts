@@ -23,12 +23,12 @@ class NanitCameraDevice extends ScryptedDeviceBase implements Intercom, Camera, 
     }
 
     async takePicture(options?: PictureOptions): Promise<MediaObject> {
-        // KNOWN ISSUE: Snapshot capture is not working reliably. The implementation
-        // attempts to extract a single frame from the RTMPS stream using FFmpeg options,
-        // but the Nanit API does not appear to support still-frame extraction via the
-        // video stream. Users will see a "Failed Snapshot" screen when attempting to
-        // capture a picture. A proper fix would require implementing snapshot capture
-        // via a separate Nanit API endpoint, if one exists.
+        // Snapshot capture works by extracting a single frame from the RTMPS stream via
+        // FFmpeg options. A "Failed Snapshot" screen was reported against an older
+        // version of this path; that report predates the auth-refresh-before-capture fix
+        // (12185bc), the FFmpeg config validation below (344d20a), and the test coverage
+        // in main.test.ts (c38b625), and has not been re-verified since (see README
+        // § Other Notes). Treat a failure here as worth reporting, not as a known issue.
         this.console.log("trying to take a photo")
         if (!this.nativeId) {
             throw new Error("missing nativeId");
