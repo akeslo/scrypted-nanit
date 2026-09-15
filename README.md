@@ -39,13 +39,12 @@ validates its FFmpeg configuration (`344d20a`), and carries test coverage (`c38b
 treat a failed snapshot as worth reporting rather than as a known-broken feature — the
 error text should now say which of those it is. 
 
-The Motion and Binary (sound/cry) sensors are declared but never fire. Each camera is
-registered with the `MotionSensor` and `BinarySensor` interfaces, and the plugin has the
-code to raise and auto-reset both states, but nothing subscribes to Nanit's event stream
-yet — so the sensors sit at `false` forever. They show up in Scrypted and in anything
-downstream (HomeKit, Home Assistant), which makes them look wired up: an automation built
-on "motion detected" on a Nanit camera will simply never run. The interfaces are left in
-place so the sensors do not disappear from existing setups when event subscription lands. 
+The Motion and Binary (sound/cry) sensors subscribe to Nanit's ActionCable event socket
+(`subscribeToEvents` in `main.ts`) and raise/auto-reset their state from it. This is
+NOT yet verified against a live camera — if a sensor never flips, suspect the
+channel/message shape before assuming the plugin is broken. A failed subscribe only logs
+and leaves the sensor at `false`, so a silently-stuck sensor is still possible if the
+socket never connects.
  
 
 ## Importing into Home Assistant
