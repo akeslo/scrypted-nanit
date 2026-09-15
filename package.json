@@ -34,10 +34,12 @@
    "devDependencies": {
       "@scrypted/sdk": "^0.2.87",
       "@types/node": "^18.15.11",
+      "@types/ws": "^8.18.1",
       "vitest": "^1.6.1"
    },
    "version": "0.1.1",
    "dependencies": {
-      "axios": "^1.4.0"
+      "axios": "^1.4.0",
+      "ws": "^8.21.3"
    }
 }

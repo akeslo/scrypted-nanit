@@ -3,6 +3,7 @@ import sdk from '@scrypted/sdk';
 import { StorageSettings } from "@scrypted/sdk/storage-settings"
 
 import axios, { AxiosRequestConfig } from 'axios'
+import WebSocket from 'ws';
 
 const { log, deviceManager, mediaManager } = sdk;
 
@@ -143,10 +144,6 @@ class NanitCameraDevice extends ScryptedDeviceBase implements Intercom, Camera, 
         }
     }
 
-    // NOTE: nothing calls triggerBinaryState()/triggerMotion() — the plugin never
-    // subscribes to Nanit's event stream, so both sensors stay false forever even
-    // though every device advertises MotionSensor/BinarySensor. Documented as a known
-    // limitation in the README; wiring up the event source is what makes them real.
     // most cameras have have motion and doorbell press events, but dont notify when the event ends.
     // so set a timeout ourselves to reset the state.
     triggerBinaryState() {
@@ -189,6 +186,83 @@ class NanitCameraPlugin extends ScryptedDeviceBase implements DeviceProvider, Se
     // and the loser gets rejected -- which discards the stored credentials and drops
     // the user back to a full email/password + MFA login for no reason.
     private loginInFlight: Promise<void> | null = null;
+    // Event-stream subscription (motion/cry via ActionCable), keyed by baby_uid, so
+    // repeated syncDevices() calls don't open a second socket per baby. Best-effort:
+    // this is wired against Nanit's undocumented "cable" websocket, has not been
+    // verified against a live device by this change, and every failure path only
+    // logs and retries -- it must never take down login, streaming, or snapshots.
+    private eventSockets = new Map<string, WebSocket>();
+
+    // Subscribes to Nanit's ActionCable event socket for one baby and forwards
+    // motion/sound (cry) events to the matching device's triggerMotion()/
+    // triggerBinaryState(). Reconnects on close/error with a fixed backoff so a single
+    // dropped connection doesn't require a plugin restart.
+    private subscribeToEvents(babyUid: string) {
+        const existing = this.eventSockets.get(babyUid);
+        if (existing && existing.readyState !== WebSocket.CLOSED) {
+            return;
+        }
+        if (!this.access_token) {
+            return;
+        }
+        let ws: WebSocket;
+        try {
+            ws = new WebSocket('wss://api.nanit.com/focus/cable', {
+                headers: { Authorization: 'Bearer ' + this.access_token },
+            });
+        } catch (err: any) {
+            this.console.log('Nanit event socket for ' + babyUid + ' failed to open: ' + (err?.message || err));
+            return;
+        }
+        this.eventSockets.set(babyUid, ws);
+
+        const reconnect = () => {
+            this.eventSockets.delete(babyUid);
+            setTimeout(() => {
+                if (this.access_token) {
+                    this.subscribeToEvents(babyUid);
+                }
+            }, 30000);
+        };
+
+        ws.on('open', () => {
+            try {
+                ws.send(JSON.stringify({
+                    command: 'subscribe',
+                    identifier: JSON.stringify({ channel: 'EventsChannel', baby_uid: babyUid }),
+                }));
+            } catch (err: any) {
+                this.console.log('Nanit event socket subscribe for ' + babyUid + ' failed: ' + (err?.message || err));
+            }
+        });
+
+        ws.on('message', (raw) => {
+            try {
+                const msg = JSON.parse(raw.toString());
+                const eventType = msg?.message?.event?.type || msg?.message?.type;
+                if (!eventType) {
+                    return;
+                }
+                const device = this.devices.get(babyUid);
+                if (!device) {
+                    return;
+                }
+                if (eventType === 'motion') {
+                    device.triggerMotion();
+                } else if (eventType === 'sound' || eventType === 'cry' || eventType === 'night_light') {
+                    device.triggerBinaryState();
+                }
+            } catch (err: any) {
+                // Malformed/unrecognized frame (e.g. ActionCable ping) -- never worth
+                // surfacing as an error, this stream is otherwise silent.
+            }
+        });
+
+        ws.on('close', reconnect);
+        ws.on('error', (err: any) => {
+            this.console.log('Nanit event socket for ' + babyUid + ' error: ' + (err?.message || err));
+        });
+    }
 
 
     settingsStorage = new StorageSettings(this, {
@@ -541,6 +615,17 @@ class NanitCameraPlugin extends ScryptedDeviceBase implements DeviceProvider, Se
             devices,
         });
         this.console.log('discovered devices');
+
+        // Best-effort: open (or confirm) the event-stream socket for every known baby
+        // so motion/cry sensors start reflecting real state. Never let a subscribe
+        // failure fail syncDevices() itself -- device discovery must still succeed.
+        for (const camera of babies) {
+            try {
+                this.subscribeToEvents(camera.uid);
+            } catch (err: any) {
+                this.console.log('Nanit event subscribe for ' + camera.uid + ' failed: ' + (err?.message || err));
+            }
+        }
     }
 
     async getDevice(nativeId: string) {
