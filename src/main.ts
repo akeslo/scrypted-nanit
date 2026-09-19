@@ -644,6 +644,17 @@ class NanitCameraPlugin extends ScryptedDeviceBase implements DeviceProvider, Se
             return;
         device.release();
         this.devices.delete(nativeId);
+        // Without this, a released device's event socket stayed open and its
+        // 'close' handler kept calling subscribeToEvents() again every 30s forever
+        // -- a permanent leaked connection to Nanit for a camera the plugin no
+        // longer has a device object for. Strip the listeners before closing so
+        // the reconnect-on-close logic in subscribeToEvents() never fires.
+        const socket = this.eventSockets?.get(nativeId);
+        if (socket) {
+            socket.removeAllListeners();
+            socket.close();
+            this.eventSockets.delete(nativeId);
+        }
         this.console.log("released device with id " + nativeId);
     }
 }
