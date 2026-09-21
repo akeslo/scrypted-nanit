@@ -9,6 +9,40 @@ vi.mock('axios', () => ({
     },
 }));
 
+// Mock 'ws' entirely -- no real socket connections in tests. Captures every
+// instance created so a test can drive its open/message/close/error handlers
+// directly instead of needing a live ActionCable server.
+const { createdSockets } = vi.hoisted(() => {
+    return { createdSockets: [] as any[] };
+});
+vi.mock('ws', () => {
+    class FakeWebSocket {
+        static CLOSED = 3;
+        static OPEN = 1;
+        url: string;
+        opts: any;
+        readyState = 1;
+        listeners: Record<string, Function[]> = {};
+        sentMessages: string[] = [];
+        constructor(url: string, opts: any) {
+            this.url = url;
+            this.opts = opts;
+            createdSockets.push(this);
+        }
+        on(event: string, cb: Function) {
+            (this.listeners[event] ||= []).push(cb);
+            return this;
+        }
+        send(data: string) {
+            this.sentMessages.push(data);
+        }
+        __emit(event: string, ...args: any[]) {
+            (this.listeners[event] || []).forEach((cb) => cb(...args));
+        }
+    }
+    return { default: FakeWebSocket };
+});
+
 /**
  * @scrypted/sdk's ScryptedDeviceBase (which NanitCameraDevice extends) and
  * main.ts's own module-level `deviceManager`/`mediaManager` bindings all
@@ -936,5 +970,164 @@ describe('NanitCameraPlugin.performLogin — mfa_token is single use', () => {
             expect.objectContaining({ mfa_token: 'fresh-token', mfa_code: '654321' }),
             expect.anything(),
         );
+    });
+});
+
+describe('NanitCameraPlugin.subscribeToEvents', () => {
+    beforeEach(() => {
+        createdSockets.length = 0;
+    });
+
+    function createEventHarness(overrides: Record<string, any> = {}) {
+        const consoleLog = vi.fn();
+        const device = { triggerMotion: vi.fn(), triggerBinaryState: vi.fn() };
+        const devices = new Map<string, any>([['baby-1', device]]);
+        const harness: any = {
+            console: { log: consoleLog },
+            access_token: 'live-token',
+            devices,
+            eventSockets: new Map(),
+            subscribeToEvents: (NanitCameraPlugin.prototype as any).subscribeToEvents,
+            ...overrides,
+        };
+        return { harness, consoleLog, device };
+    }
+
+    it('does nothing without an access token', () => {
+        const { harness } = createEventHarness({ access_token: '' });
+
+        harness.subscribeToEvents('baby-1');
+
+        expect(createdSockets).toHaveLength(0);
+    });
+
+    it('opens a socket to the ActionCable endpoint and subscribes to the EventsChannel on open', () => {
+        const { harness } = createEventHarness();
+
+        harness.subscribeToEvents('baby-1');
+
+        expect(createdSockets).toHaveLength(1);
+        const socket = createdSockets[0];
+        expect(socket.url).toBe('wss://api.nanit.com/focus/cable');
+        expect(socket.opts).toEqual({ headers: { Authorization: 'Bearer live-token' } });
+
+        socket.__emit('open');
+
+        expect(socket.sentMessages).toHaveLength(1);
+        expect(JSON.parse(socket.sentMessages[0])).toEqual({
+            command: 'subscribe',
+            identifier: JSON.stringify({ channel: 'EventsChannel', baby_uid: 'baby-1' }),
+        });
+    });
+
+    it('does not open a second socket for a baby that already has one open', () => {
+        const { harness } = createEventHarness();
+
+        harness.subscribeToEvents('baby-1');
+        harness.subscribeToEvents('baby-1');
+
+        expect(createdSockets).toHaveLength(1);
+    });
+
+    it('opens a new socket for a baby whose existing socket is closed', () => {
+        const { harness } = createEventHarness();
+
+        harness.subscribeToEvents('baby-1');
+        createdSockets[0].readyState = 3; // CLOSED
+
+        harness.subscribeToEvents('baby-1');
+
+        expect(createdSockets).toHaveLength(2);
+    });
+
+    it('routes a motion message to the matching device\'s triggerMotion()', () => {
+        const { harness, device } = createEventHarness();
+        harness.subscribeToEvents('baby-1');
+        const socket = createdSockets[0];
+
+        socket.__emit('message', JSON.stringify({ message: { event: { type: 'motion' } } }));
+
+        expect(device.triggerMotion).toHaveBeenCalledTimes(1);
+        expect(device.triggerBinaryState).not.toHaveBeenCalled();
+    });
+
+    it.each(['sound', 'cry', 'night_light'])(
+        'routes a %s message to the matching device\'s triggerBinaryState()',
+        (eventType) => {
+            const { harness, device } = createEventHarness();
+            harness.subscribeToEvents('baby-1');
+            const socket = createdSockets[0];
+
+            socket.__emit('message', JSON.stringify({ message: { event: { type: eventType } } }));
+
+            expect(device.triggerBinaryState).toHaveBeenCalledTimes(1);
+            expect(device.triggerMotion).not.toHaveBeenCalled();
+        },
+    );
+
+    it('ignores a message for a baby with no matching device', () => {
+        const { harness, device } = createEventHarness();
+        harness.subscribeToEvents('baby-2');
+        const socket = createdSockets[0];
+
+        socket.__emit('message', JSON.stringify({ message: { event: { type: 'motion' } } }));
+
+        expect(device.triggerMotion).not.toHaveBeenCalled();
+    });
+
+    it('ignores an unparseable/unrecognized frame without throwing', () => {
+        const { harness } = createEventHarness();
+        harness.subscribeToEvents('baby-1');
+        const socket = createdSockets[0];
+
+        expect(() => socket.__emit('message', 'not json')).not.toThrow();
+        expect(() => socket.__emit('message', JSON.stringify({ type: 'ping' }))).not.toThrow();
+    });
+
+    it('reconnects on close after a fixed backoff while the access token is still present', () => {
+        vi.useFakeTimers();
+        try {
+            const { harness } = createEventHarness();
+            const spy = vi.spyOn(harness, 'subscribeToEvents');
+            harness.subscribeToEvents('baby-1');
+            const socket = createdSockets[0];
+            spy.mockClear();
+
+            socket.__emit('close');
+            expect(harness.eventSockets.has('baby-1')).toBe(false);
+
+            vi.advanceTimersByTime(30000);
+
+            expect(createdSockets).toHaveLength(2);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('does not reconnect on close once the access token has been cleared', () => {
+        vi.useFakeTimers();
+        try {
+            const { harness } = createEventHarness();
+            harness.subscribeToEvents('baby-1');
+            const socket = createdSockets[0];
+
+            harness.access_token = '';
+            socket.__emit('close');
+            vi.advanceTimersByTime(30000);
+
+            expect(createdSockets).toHaveLength(1);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('logs instead of throwing on a socket error event', () => {
+        const { harness, consoleLog } = createEventHarness();
+        harness.subscribeToEvents('baby-1');
+        const socket = createdSockets[0];
+
+        socket.__emit('error', new Error('boom'));
+
+        expect(consoleLog).toHaveBeenCalledWith(expect.stringContaining('boom'));
     });
 });
