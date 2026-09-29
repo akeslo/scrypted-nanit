@@ -122,11 +122,16 @@ function createPluginHarness(storageInitial: Record<string, any> = {}) {
         mfa_token: '',
         failedCount: 0,
         loginInFlight: null,
+        // clearAndLogin()/clearAndTrySyncDevices() both call closeAllEventSockets(),
+        // which iterates this map -- needs to exist on the harness even though no
+        // test here opens a real socket.
+        eventSockets: new Map(),
         getSettings: (NanitCameraPlugin.prototype as any).getSettings,
         tryLogin: (NanitCameraPlugin.prototype as any).tryLogin,
         performLogin: (NanitCameraPlugin.prototype as any).performLogin,
         clearAndLogin: (NanitCameraPlugin.prototype as any).clearAndLogin,
         clearAndTrySyncDevices: (NanitCameraPlugin.prototype as any).clearAndTrySyncDevices,
+        closeAllEventSockets: (NanitCameraPlugin.prototype as any).closeAllEventSockets,
         syncDevices: vi.fn(), // not under test here
     };
 
@@ -241,6 +246,41 @@ describe('NanitCameraPlugin.tryLogin', () => {
                 { email: 'parent@example.com', password: 'hunter2' },
                 expect.anything(),
             );
+        });
+
+        it('clearAndLogin closes and forgets every open event socket', async () => {
+            const { harness } = createPluginHarness({
+                email: 'parent@example.com',
+                password: 'hunter2',
+            });
+            harness.access_token = 'stale-token';
+            const staleSocket = { removeAllListeners: vi.fn(), close: vi.fn() };
+            harness.eventSockets.set('baby-1', staleSocket);
+
+            mockedAxios.post.mockResolvedValueOnce({ data: { mfa_token: undefined } });
+
+            await harness.clearAndLogin();
+
+            expect(staleSocket.removeAllListeners).toHaveBeenCalledTimes(1);
+            expect(staleSocket.close).toHaveBeenCalledTimes(1);
+            expect(harness.eventSockets.size).toBe(0);
+        });
+
+        it('clearAndTrySyncDevices closes and forgets every open event socket', async () => {
+            const { harness } = createPluginHarness({
+                email: 'parent@example.com',
+                password: 'hunter2',
+            });
+            harness.access_token = 'stale-token';
+            const staleSocket = { removeAllListeners: vi.fn(), close: vi.fn() };
+            harness.eventSockets.set('baby-1', staleSocket);
+            harness.syncDevices.mockResolvedValueOnce(undefined);
+
+            await harness.clearAndTrySyncDevices();
+
+            expect(staleSocket.removeAllListeners).toHaveBeenCalledTimes(1);
+            expect(staleSocket.close).toHaveBeenCalledTimes(1);
+            expect(harness.eventSockets.size).toBe(0);
         });
     });
 

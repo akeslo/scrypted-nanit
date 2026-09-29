@@ -193,6 +193,21 @@ class NanitCameraPlugin extends ScryptedDeviceBase implements DeviceProvider, Se
     // logs and retries -- it must never take down login, streaming, or snapshots.
     private eventSockets = new Map<string, WebSocket>();
 
+    // Closes every open event socket without letting its reconnect-on-close logic
+    // fire again. Mirrors the cleanup releaseDevice() already does for a single
+    // socket (see its comment) -- credential changes need the same treatment:
+    // without this, a socket opened under the old email/password kept running
+    // and reconnecting under stale credentials indefinitely after the user
+    // switched accounts or fixed a typo, since neither clearAndTrySyncDevices()
+    // nor clearAndLogin() ever touched eventSockets.
+    private closeAllEventSockets() {
+        for (const socket of this.eventSockets.values()) {
+            socket.removeAllListeners();
+            socket.close();
+        }
+        this.eventSockets.clear();
+    }
+
     // Subscribes to Nanit's ActionCable event socket for one baby and forwards
     // motion/sound (cry) events to the matching device's triggerMotion()/
     // triggerBinaryState(). Reconnects on close/error with a fixed backoff so a single
@@ -367,6 +382,7 @@ class NanitCameraPlugin extends ScryptedDeviceBase implements DeviceProvider, Se
         this.console.log("clearAndTrySyncDevices called");
         this.access_token = '';
         await this.settingsStorage.putSetting("access_token", '');
+        this.closeAllEventSockets();
         return this.syncDevices(0).catch((err) => {
             this.console.log("syncDevices failed after credential change: " + (err?.message || err));
         });
@@ -376,6 +392,7 @@ class NanitCameraPlugin extends ScryptedDeviceBase implements DeviceProvider, Se
         this.console.log("clearAndLogin called");
         this.access_token = '';
         await this.settingsStorage.putSetting("access_token", '');
+        this.closeAllEventSockets();
         // Call performLogin() directly, not tryLogin(): clearAndLogin() is itself
         // invoked from inside an in-flight performLogin(), and routing back through
         // the single-flight guard would return that same pending promise and deadlock.
