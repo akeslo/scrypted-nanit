@@ -1171,3 +1171,98 @@ describe('NanitCameraPlugin.subscribeToEvents', () => {
         expect(consoleLog).toHaveBeenCalledWith(expect.stringContaining('boom'));
     });
 });
+
+describe('NanitCameraPlugin.getMotionTimeoutMs', () => {
+    const call = (stored: any) =>
+        (NanitCameraPlugin.prototype as any).getMotionTimeoutMs.call({
+            settingsStorage: { getItem: () => stored },
+        });
+
+    it('defaults to 10000 when unset or empty', () => {
+        expect(call(undefined)).toBe(10000);
+        expect(call(null)).toBe(10000);
+        expect(call('')).toBe(10000);
+    });
+
+    it('parses a valid configured value', () => {
+        expect(call('2500')).toBe(2500);
+        expect(call(4000)).toBe(4000);
+    });
+
+    it('falls back to 10000 for non-numeric, zero or negative values', () => {
+        expect(call('abc')).toBe(10000);
+        expect(call('0')).toBe(10000);
+        expect(call('-5')).toBe(10000);
+    });
+});
+
+describe('NanitCameraDevice trigger timers', () => {
+    async function makeDevice(timeoutMs = 1000) {
+        const { harness } = createProviderHarness();
+        const device: any = await harness.getDevice('baby-1');
+        device.plugin.getMotionTimeoutMs = vi.fn(() => timeoutMs);
+        return device;
+    }
+
+    it('triggerMotion sets motionDetected and auto-resets after the timeout', async () => {
+        vi.useFakeTimers();
+        try {
+            const device = await makeDevice(1000);
+            device.triggerMotion();
+            expect(device.motionDetected).toBe(true);
+            vi.advanceTimersByTime(999);
+            expect(device.motionDetected).toBe(true);
+            vi.advanceTimersByTime(1);
+            expect(device.motionDetected).toBe(false);
+            expect(device.motionTimeoutId).toBeNull();
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('triggerMotion restarts the window instead of stacking timers', async () => {
+        vi.useFakeTimers();
+        try {
+            const device = await makeDevice(1000);
+            device.triggerMotion();
+            vi.advanceTimersByTime(800);
+            device.triggerMotion();
+            vi.advanceTimersByTime(800);
+            expect(device.motionDetected).toBe(true);
+            vi.advanceTimersByTime(200);
+            expect(device.motionDetected).toBe(false);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('triggerBinaryState sets binaryState and auto-resets after the timeout', async () => {
+        vi.useFakeTimers();
+        try {
+            const device = await makeDevice(500);
+            device.triggerBinaryState();
+            expect(device.binaryState).toBe(true);
+            vi.advanceTimersByTime(500);
+            expect(device.binaryState).toBe(false);
+            expect(device.binaryStateTimeoutId).toBeNull();
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('triggerBinaryState restarts the window instead of stacking timers', async () => {
+        vi.useFakeTimers();
+        try {
+            const device = await makeDevice(500);
+            device.triggerBinaryState();
+            vi.advanceTimersByTime(400);
+            device.triggerBinaryState();
+            vi.advanceTimersByTime(400);
+            expect(device.binaryState).toBe(true);
+            vi.advanceTimersByTime(100);
+            expect(device.binaryState).toBe(false);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+});
