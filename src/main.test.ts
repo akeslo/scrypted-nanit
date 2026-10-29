@@ -132,6 +132,7 @@ function createPluginHarness(storageInitial: Record<string, any> = {}) {
         clearAndLogin: (NanitCameraPlugin.prototype as any).clearAndLogin,
         clearAndTrySyncDevices: (NanitCameraPlugin.prototype as any).clearAndTrySyncDevices,
         closeAllEventSockets: (NanitCameraPlugin.prototype as any).closeAllEventSockets,
+        discardSocket: (NanitCameraPlugin.prototype as any).discardSocket,
         syncDevices: vi.fn(), // not under test here
     };
 
@@ -254,7 +255,7 @@ describe('NanitCameraPlugin.tryLogin', () => {
                 password: 'hunter2',
             });
             harness.access_token = 'stale-token';
-            const staleSocket = { removeAllListeners: vi.fn(), close: vi.fn() };
+            const staleSocket = { removeAllListeners: vi.fn(), on: vi.fn(), close: vi.fn() };
             harness.eventSockets.set('baby-1', staleSocket);
 
             mockedAxios.post.mockResolvedValueOnce({ data: { mfa_token: undefined } });
@@ -272,7 +273,7 @@ describe('NanitCameraPlugin.tryLogin', () => {
                 password: 'hunter2',
             });
             harness.access_token = 'stale-token';
-            const staleSocket = { removeAllListeners: vi.fn(), close: vi.fn() };
+            const staleSocket = { removeAllListeners: vi.fn(), on: vi.fn(), close: vi.fn() };
             harness.eventSockets.set('baby-1', staleSocket);
             harness.syncDevices.mockResolvedValueOnce(undefined);
 
@@ -526,6 +527,7 @@ function createProviderHarness(overrides: Record<string, any> = {}) {
         syncDevices: (NanitCameraPlugin.prototype as any).syncDevices,
         getDevice: (NanitCameraPlugin.prototype as any).getDevice,
         releaseDevice: (NanitCameraPlugin.prototype as any).releaseDevice,
+        discardSocket: (NanitCameraPlugin.prototype as any).discardSocket,
         createDevice: (NanitCameraPlugin.prototype as any).createDevice,
         ...overrides,
     };
@@ -650,6 +652,18 @@ describe('NanitCameraPlugin.releaseDevice', () => {
         const { harness } = createProviderHarness();
 
         await expect(harness.releaseDevice('id-1', 'unknown')).resolves.toBeUndefined();
+    });
+});
+
+describe('NanitCameraPlugin.discardSocket', () => {
+    it('survives closing a socket that emits error synchronously on close', () => {
+        const { harness } = createProviderHarness();
+        const { EventEmitter } = require('events');
+        const socket: any = new EventEmitter();
+        // Mimics ws: close() while CONNECTING emits 'error' synchronously.
+        socket.close = () => socket.emit('error', new Error('closed before established'));
+
+        expect(() => harness.discardSocket(socket)).not.toThrow();
     });
 });
 

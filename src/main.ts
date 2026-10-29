@@ -193,6 +193,15 @@ class NanitCameraPlugin extends ScryptedDeviceBase implements DeviceProvider, Se
     // logs and retries -- it must never take down login, streaming, or snapshots.
     private eventSockets = new Map<string, WebSocket>();
 
+    // Strips a socket's handlers and closes it. close() on a still-CONNECTING ws
+    // synchronously emits 'error'; with every listener removed that throws and takes
+    // the plugin down, so leave a no-op error listener behind.
+    private discardSocket(socket: WebSocket) {
+        socket.removeAllListeners();
+        socket.on('error', () => { });
+        socket.close();
+    }
+
     // Closes every open event socket without letting its reconnect-on-close logic
     // fire again. Mirrors the cleanup releaseDevice() already does for a single
     // socket (see its comment) -- credential changes need the same treatment:
@@ -202,8 +211,7 @@ class NanitCameraPlugin extends ScryptedDeviceBase implements DeviceProvider, Se
     // nor clearAndLogin() ever touched eventSockets.
     private closeAllEventSockets() {
         for (const socket of this.eventSockets.values()) {
-            socket.removeAllListeners();
-            socket.close();
+            this.discardSocket(socket);
         }
         this.eventSockets.clear();
     }
@@ -668,8 +676,7 @@ class NanitCameraPlugin extends ScryptedDeviceBase implements DeviceProvider, Se
         // the reconnect-on-close logic in subscribeToEvents() never fires.
         const socket = this.eventSockets?.get(nativeId);
         if (socket) {
-            socket.removeAllListeners();
-            socket.close();
+            this.discardSocket(socket);
             this.eventSockets.delete(nativeId);
         }
         this.console.log("released device with id " + nativeId);
